@@ -16,6 +16,14 @@ The first driver targets Laravel Echo with its Pusher-compatible connector, incl
 
 ## Installation
 
+Until the package is registered with Packagist, add its public GitHub repository to Composer once:
+
+```bash
+composer config repositories.pest-plugin-realtime vcs https://github.com/kirschbaum-development/pest-plugin-realtime
+```
+
+Then install the tagged release:
+
 ```bash
 composer require kirschbaum-development/pest-plugin-realtime --dev
 ```

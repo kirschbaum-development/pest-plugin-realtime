@@ -17,6 +17,6 @@ function realtime(
 ): RealtimeSession {
     return new RealtimeSession(
         new PestBrowserScriptExecutor($page),
-        $driver ?? new EchoPusherDriver,
+        $driver ?? new EchoPusherDriver(),
     );
 }

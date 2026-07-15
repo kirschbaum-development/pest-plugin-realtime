@@ -9,7 +9,7 @@ use Pest\Realtime\Tests\Support\FixtureServer;
 
 use function Pest\Realtime\realtime;
 
-$fixtureServer = new FixtureServer;
+$fixtureServer = new FixtureServer();
 
 beforeAll(function () use ($fixtureServer): void {
     $fixtureServer->start();

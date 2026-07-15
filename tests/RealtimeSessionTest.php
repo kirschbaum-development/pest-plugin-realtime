@@ -11,7 +11,7 @@ use Pest\Realtime\RealtimeSession;
 use Pest\Realtime\Tests\Fakes\FakeScriptExecutor;
 
 it('normalizes Echo channel identifiers', function (): void {
-    $driver = new EchoPusherDriver;
+    $driver = new EchoPusherDriver();
 
     expect($driver->channelId('auctions.1', ChannelVisibility::Public))->toBe('auctions.1')
         ->and($driver->channelId('buyers.2', ChannelVisibility::Private))->toBe('private-buyers.2')
@@ -27,7 +27,7 @@ it('installs, inspects subscriptions, and transitions connection state', functio
         ConnectionStatus::Reconnecting->value,
         ConnectionStatus::Connected->value,
     ]);
-    $session = new RealtimeSession($executor, new EchoPusherDriver);
+    $session = new RealtimeSession($executor, new EchoPusherDriver());
 
     $session->install()
         ->assertSubscribed('buyers.2', ChannelVisibility::Private)
@@ -42,7 +42,7 @@ it('installs, inspects subscriptions, and transitions connection state', functio
 
 it('reports whether an event was delivered or dropped', function (): void {
     $executor = new FakeScriptExecutor([true, false]);
-    $session = new RealtimeSession($executor, new EchoPusherDriver);
+    $session = new RealtimeSession($executor, new EchoPusherDriver());
 
     expect($session->emit('auctions.1', 'PriceChanged', ['price' => 1200]))
         ->toBe(EventDelivery::Delivered)
@@ -53,7 +53,7 @@ it('reports whether an event was delivered or dropped', function (): void {
 it('rejects malformed browser runtime responses', function (): void {
     $session = new RealtimeSession(
         new FakeScriptExecutor(['not-a-channel-list']),
-        new EchoPusherDriver,
+        new EchoPusherDriver(),
     );
 
     expect(fn () => $session->install())
@@ -61,7 +61,7 @@ it('rejects malformed browser runtime responses', function (): void {
 });
 
 it('encodes event data safely into the browser script', function (): void {
-    $script = new EchoPusherDriver()->emitScript(
+    $script = (new EchoPusherDriver())->emitScript(
         'auctions.1',
         'App\\Events\\PriceChanged',
         ['message' => '</script><script>alert("unsafe")</script>'],

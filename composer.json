@@ -1,0 +1,68 @@
+{
+    "name": "kirschbaum-development/pest-plugin-realtime",
+    "description": "Deterministically test realtime browser behavior, dropped events, and connection recovery with Pest.",
+    "keywords": [
+        "browser",
+        "echo",
+        "laravel",
+        "pest",
+        "pusher",
+        "realtime",
+        "testing",
+        "websocket"
+    ],
+    "homepage": "https://github.com/kirschbaum-development/pest-plugin-realtime",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Kirschbaum Development",
+            "homepage": "https://kirschbaumdevelopment.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/kirschbaum-development/pest-plugin-realtime/issues",
+        "source": "https://github.com/kirschbaum-development/pest-plugin-realtime"
+    },
+    "require": {
+        "php": "^8.3",
+        "pestphp/pest": "^4.7",
+        "pestphp/pest-plugin": "^4.0",
+        "pestphp/pest-plugin-browser": "^4.3"
+    },
+    "require-dev": {
+        "pestphp/pest-dev-tools": "^4.1",
+        "symfony/process": "^7.2 || ^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Pest\\Realtime\\": "src/"
+        },
+        "files": [
+            "src/Autoload.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Pest\\Realtime\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true,
+        "preferred-install": "dist",
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "scripts": {
+        "test:lint": "pint --test",
+        "test:types": "phpstan analyse --ansi",
+        "test:unit": "pest --colors=always",
+        "test": [
+            "@test:lint",
+            "@test:types",
+            "@test:unit"
+        ]
+    }
+}

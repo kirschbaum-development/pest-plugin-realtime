@@ -1,0 +1,8 @@
+/.idea/
+/.phpunit.cache/
+/node_modules/
+/vendor/
+composer.lock
+coverage.xml
+*.swp
+*.swo

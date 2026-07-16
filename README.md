@@ -38,17 +38,14 @@ VITE_REVERB_PORT=65535
 VITE_REVERB_SCHEME=http
 ```
 
-Backend broadcasting can remain disabled or faked.
+Backend broadcasting can remain disabled. When `captureBroadcasts()` runs, the plugin temporarily replaces Laravel's configured broadcast connections and restores them afterward.
 
 ## Usage
 
 ```php
-use App\Data\AuctionSellingPriceData;
-use App\Events\LotSellingPriceUpdatedEvent;
 use App\Models\Auction;
 use Pest\Realtime\ChannelVisibility;
 use Pest\Realtime\ConnectionStatus;
-use Pest\Realtime\EventDelivery;
 
 use function Pest\Realtime\realtime;
 
@@ -61,25 +58,21 @@ it('recovers an event missed while disconnected', function (): void {
         ->assertSubscribed('buyers.2', ChannelVisibility::Private)
         ->connect();
 
-    $auction->update(['lot_selling_price' => 2200]);
-
-    $event = new LotSellingPriceUpdatedEvent(
-        AuctionSellingPriceData::from($auction),
+    $broadcasts = $realtime->captureBroadcasts(
+        fn () => $auction->update(['lot_selling_price' => 2200]),
     );
 
-    expect($realtime->emit($event))->toBe(EventDelivery::Delivered);
+    expect($broadcasts->allDelivered())->toBeTrue();
 
     $page->waitForText('$2,200.00');
 
     $realtime->disconnect();
 
-    $auction->update(['lot_selling_price' => 3300]);
-
-    $event = new LotSellingPriceUpdatedEvent(
-        AuctionSellingPriceData::from($auction),
+    $broadcasts = $realtime->captureBroadcasts(
+        fn () => $auction->update(['lot_selling_price' => 3300]),
     );
 
-    expect($realtime->emit($event))->toBe(EventDelivery::Dropped);
+    expect($broadcasts->droppedCount())->toBe(1);
 
     $realtime
         ->transitionTo(ConnectionStatus::Failed)
@@ -88,6 +81,35 @@ it('recovers an event missed while disconnected', function (): void {
     $page->waitForText('$3,300.00');
 });
 ```
+
+`captureBroadcasts()` runs the callback through the real application path. Model observers, event listeners, `broadcastWhen()`, `broadcastOn()`, `broadcastAs()`, `broadcastWith()`, and explicitly selected broadcast connections all run under Laravel's normal dispatcher. The plugin captures the final calls Laravel would make to its broadcaster and replays them through the simulated browser connection in order.
+
+```text
+test callback
+    │
+    ▼
+application code ──► observer/listener ──► Laravel broadcast event
+                                              │
+                                              ▼
+                                    temporary capture driver
+                                              │ final channels,
+                                              │ name, payload
+                                              ▼
+                                Echo simulator ──► page listener
+```
+
+The capture scope always restores the original broadcasting configuration and resolved drivers, including when the callback throws. Its result reports the number of Laravel broadcast calls and their browser deliveries:
+
+```php
+$broadcasts->capturedCount();
+$broadcasts->deliveredCount();
+$broadcasts->droppedCount();
+$broadcasts->allDelivered();
+```
+
+Do not wrap the application event under test in `Event::fake()`: Laravel cannot run observers or broadcast listeners for an event that the test has suppressed.
+
+### Direct event emission
 
 When passed a Laravel broadcast event object, `emit()` derives every wire-level value from the event:
 
@@ -147,7 +169,8 @@ It does not test:
 - Reverb/Pusher server behavior
 - TLS, proxy, or load-balancer configuration
 - Channel authorization endpoints
-- Backend broadcast dispatch
+
+`captureBroadcasts()` captures work dispatched in the test's PHP process. Broadcast jobs handled later by a separate queue worker and application requests triggered inside the browser run in other processes, so they are outside this in-memory capture scope. Use a synchronous queue for queued broadcasts you want to capture, or trigger and capture the underlying application action directly in the test.
 
 Keep backend tests for channel authorization, event payload contracts, and broadcast failure tolerance. A future driver can use Playwright WebSocket routing when Pest Browser exposes that browser-context API publicly.
 

@@ -50,6 +50,18 @@ final class RealtimeSimulationException extends RuntimeException
         ));
     }
 
+    public static function broadcastCaptureUnavailable(): self
+    {
+        return new self(
+            'Laravel broadcast capture is unavailable. Run captureBroadcasts() inside a booted Laravel application.',
+        );
+    }
+
+    public static function nestedBroadcastCapture(): self
+    {
+        return new self('Laravel broadcast captures cannot be nested.');
+    }
+
     public static function unexpectedResult(string $operation, mixed $result): self
     {
         return new self(sprintf(

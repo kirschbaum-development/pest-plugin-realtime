@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Pest\Realtime;
 
+use Closure;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Contracts\Support\Arrayable;
+use Pest\Realtime\Contracts\BroadcastCapture;
 use Pest\Realtime\Contracts\Driver;
 use Pest\Realtime\Contracts\ScriptExecutor;
 use Pest\Realtime\Exceptions\RealtimeSimulationException;
@@ -19,6 +21,7 @@ final readonly class RealtimeSession
     public function __construct(
         private ScriptExecutor $executor,
         private Driver $driver,
+        private ?BroadcastCapture $broadcastCapture = null,
     ) {}
 
     public function install(): self
@@ -127,6 +130,31 @@ final readonly class RealtimeSession
         );
     }
 
+    public function captureBroadcasts(Closure $callback): BroadcastBatch
+    {
+        if ($this->broadcastCapture === null) {
+            throw RealtimeSimulationException::broadcastCaptureUnavailable();
+        }
+
+        $broadcasts = $this->broadcastCapture->capture($callback);
+        $deliveries = [];
+
+        foreach ($broadcasts as $broadcast) {
+            foreach ($broadcast->channels as $wireChannel) {
+                [$channel, $visibility] = $this->parseWireChannel($wireChannel);
+
+                $deliveries[] = $this->emitToChannel(
+                    $channel,
+                    $broadcast->event,
+                    $broadcast->payload,
+                    $visibility,
+                );
+            }
+        }
+
+        return new BroadcastBatch(count($broadcasts), $deliveries);
+    }
+
     private function emitBroadcastEvent(ShouldBroadcast $event): EventDelivery
     {
         $channels = $this->broadcastChannels($event, $event->broadcastOn());
@@ -193,15 +221,23 @@ final readonly class RealtimeSession
 
         $channel = (string) $channels;
 
+        return [$this->parseWireChannel($channel)];
+    }
+
+    /**
+     * @return array{string, ChannelVisibility}
+     */
+    private function parseWireChannel(string $channel): array
+    {
         if (str_starts_with($channel, 'presence-')) {
-            return [[substr($channel, 9), ChannelVisibility::Presence]];
+            return [substr($channel, 9), ChannelVisibility::Presence];
         }
 
         if (str_starts_with($channel, 'private-')) {
-            return [[substr($channel, 8), ChannelVisibility::Private]];
+            return [substr($channel, 8), ChannelVisibility::Private];
         }
 
-        return [[$channel, ChannelVisibility::Public]];
+        return [$channel, ChannelVisibility::Public];
     }
 
     private function broadcastPayload(ShouldBroadcast $event): mixed

@@ -89,6 +89,13 @@ it('rejects wire overrides for broadcast event objects', function (): void {
         ->toThrow(RealtimeSimulationException::class, 'explicit overrides are not supported');
 });
 
+it('requires a Laravel broadcast capture integration to capture application code', function (): void {
+    $session = new RealtimeSession(new FakeScriptExecutor([]), new EchoPusherDriver());
+
+    expect(fn () => $session->captureBroadcasts(fn () => null))
+        ->toThrow(RealtimeSimulationException::class, 'Laravel broadcast capture is unavailable');
+});
+
 it('rejects malformed browser runtime responses', function (): void {
     $session = new RealtimeSession(
         new FakeScriptExecutor(['not-a-channel-list']),

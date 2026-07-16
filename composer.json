@@ -24,6 +24,7 @@
         "source": "https://github.com/kirschbaum-development/pest-plugin-realtime"
     },
     "require": {
+        "illuminate/contracts": "^11.0 || ^12.0 || ^13.0",
         "php": "^8.3",
         "pestphp/pest": "^4.7",
         "pestphp/pest-plugin": "^4.0",

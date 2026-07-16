@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Pest\Realtime\ChannelVisibility;
 use Pest\Realtime\ConnectionStatus;
 use Pest\Realtime\EventDelivery;
+use Pest\Realtime\Tests\Fixtures\NamedPriceChanged;
 use Pest\Realtime\Tests\Support\FixtureServer;
 
 use function Pest\Realtime\realtime;
@@ -84,12 +85,14 @@ it('simulates Echo Pusher events, dropped delivery, and connection recovery', fu
         ->assertSubscribed('room.3', ChannelVisibility::Presence);
 
     expect($realtime->status())->toBe(ConnectionStatus::Disconnected)
-        ->and($realtime->emit('auctions.1', 'PriceChanged', ['price' => 1200]))
+        ->and($realtime->emit('PriceChanged', 'auctions.1', ['price' => 1200]))
         ->toBe(EventDelivery::Dropped);
 
     $realtime->connect();
 
-    expect($realtime->emit('auctions.1', 'PriceChanged', ['price' => 1300]))
+    expect($realtime->emit('PriceChanged', 'auctions.1', ['price' => 1300]))
+        ->toBe(EventDelivery::Delivered)
+        ->and($realtime->emit(new NamedPriceChanged(auctionId: 1, price: 1400)))
         ->toBe(EventDelivery::Delivered)
         ->and($page->script('window.__fakeRealtime.received'))
         ->toBe([
@@ -97,6 +100,21 @@ it('simulates Echo Pusher events, dropped delivery, and connection recovery', fu
                 'name' => 'auctions.1',
                 'event' => 'PriceChanged',
                 'payload' => ['price' => 1300],
+            ],
+            [
+                'name' => 'auctions.1',
+                'event' => 'price.changed',
+                'payload' => ['price' => 1400],
+            ],
+            [
+                'name' => 'private-buyers.2',
+                'event' => 'price.changed',
+                'payload' => ['price' => 1400],
+            ],
+            [
+                'name' => 'presence-room.3',
+                'event' => 'price.changed',
+                'payload' => ['price' => 1400],
             ],
         ]);
 

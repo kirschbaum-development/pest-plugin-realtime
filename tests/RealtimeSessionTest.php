@@ -9,6 +9,8 @@ use Pest\Realtime\EventDelivery;
 use Pest\Realtime\Exceptions\RealtimeSimulationException;
 use Pest\Realtime\RealtimeSession;
 use Pest\Realtime\Tests\Fakes\FakeScriptExecutor;
+use Pest\Realtime\Tests\Fixtures\NamedPriceChanged;
+use Pest\Realtime\Tests\Fixtures\PriceChanged;
 
 it('normalizes Echo channel identifiers', function (): void {
     $driver = new EchoPusherDriver();
@@ -44,10 +46,47 @@ it('reports whether an event was delivered or dropped', function (): void {
     $executor = new FakeScriptExecutor([true, false]);
     $session = new RealtimeSession($executor, new EchoPusherDriver());
 
-    expect($session->emit('auctions.1', 'PriceChanged', ['price' => 1200]))
+    expect($session->emit('PriceChanged', 'auctions.1', ['price' => 1200]))
         ->toBe(EventDelivery::Delivered)
-        ->and($session->emit('auctions.1', 'PriceChanged', ['price' => 1300]))
+        ->and($session->emit('PriceChanged', 'auctions.1', ['price' => 1300]))
         ->toBe(EventDelivery::Dropped);
+});
+
+it('derives channels, visibility, name, and payload from a broadcast event', function (): void {
+    $executor = new FakeScriptExecutor([true, true, true]);
+    $session = new RealtimeSession($executor, new EchoPusherDriver());
+
+    expect($session->emit(new NamedPriceChanged(auctionId: 1, price: 1200)))
+        ->toBe(EventDelivery::Delivered)
+        ->and($executor->scripts)->toHaveCount(3)
+        ->and($executor->scripts[0])->toContain('"auctions.1","price.changed",{"price":1200},"public"')
+        ->and($executor->scripts[1])->toContain('"buyers.2","price.changed",{"price":1200},"private"')
+        ->and($executor->scripts[2])->toContain('"room.3","price.changed",{"price":1200},"presence"');
+});
+
+it('uses the event class and public properties when broadcast overrides are absent', function (): void {
+    $executor = new FakeScriptExecutor([true]);
+    $session = new RealtimeSession($executor, new EchoPusherDriver());
+
+    expect($session->emit(new PriceChanged(price: 1200)))
+        ->toBe(EventDelivery::Delivered)
+        ->and($executor->scripts[0])
+        ->toContain('Pest\\\\Realtime\\\\Tests\\\\Fixtures\\\\PriceChanged')
+        ->toContain('{"price":1200}');
+});
+
+it('requires a channel when emitting a raw event name', function (): void {
+    $session = new RealtimeSession(new FakeScriptExecutor([]), new EchoPusherDriver());
+
+    expect(fn () => $session->emit('PriceChanged'))
+        ->toThrow(RealtimeSimulationException::class, 'requires an explicit channel');
+});
+
+it('rejects wire overrides for broadcast event objects', function (): void {
+    $session = new RealtimeSession(new FakeScriptExecutor([]), new EchoPusherDriver());
+
+    expect(fn () => $session->emit(new PriceChanged(price: 1200), channel: 'other'))
+        ->toThrow(RealtimeSimulationException::class, 'explicit overrides are not supported');
 });
 
 it('rejects malformed browser runtime responses', function (): void {

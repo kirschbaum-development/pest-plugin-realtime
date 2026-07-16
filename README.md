@@ -43,7 +43,9 @@ Backend broadcasting can remain disabled or faked.
 ## Usage
 
 ```php
+use App\Data\AuctionSellingPriceData;
 use App\Events\LotSellingPriceUpdatedEvent;
+use App\Models\Auction;
 use Pest\Realtime\ChannelVisibility;
 use Pest\Realtime\ConnectionStatus;
 use Pest\Realtime\EventDelivery;
@@ -51,30 +53,33 @@ use Pest\Realtime\EventDelivery;
 use function Pest\Realtime\realtime;
 
 it('recovers an event missed while disconnected', function (): void {
-    $page = visit('/auctions/1/live');
+    $auction = Auction::query()->findOrFail(1);
+    $page = visit("/auctions/{$auction->id}/live");
 
     $realtime = realtime($page)->install()
         ->assertSubscribed('auctions.1')
         ->assertSubscribed('buyers.2', ChannelVisibility::Private)
         ->connect();
 
-    expect($realtime->emit(
-        channel: 'auctions.1',
-        event: LotSellingPriceUpdatedEvent::class,
-        payload: ['lot_selling_price' => 2200],
-    ))->toBe(EventDelivery::Delivered);
+    $auction->update(['lot_selling_price' => 2200]);
+
+    $event = new LotSellingPriceUpdatedEvent(
+        AuctionSellingPriceData::from($auction),
+    );
+
+    expect($realtime->emit($event))->toBe(EventDelivery::Delivered);
 
     $page->waitForText('$2,200.00');
 
     $realtime->disconnect();
 
-    expect($realtime->emit(
-        channel: 'auctions.1',
-        event: LotSellingPriceUpdatedEvent::class,
-        payload: ['lot_selling_price' => 3300],
-    ))->toBe(EventDelivery::Dropped);
+    $auction->update(['lot_selling_price' => 3300]);
 
-    // Update the application's authoritative database state here.
+    $event = new LotSellingPriceUpdatedEvent(
+        AuctionSellingPriceData::from($auction),
+    );
+
+    expect($realtime->emit($event))->toBe(EventDelivery::Dropped);
 
     $realtime
         ->transitionTo(ConnectionStatus::Failed)
@@ -82,6 +87,22 @@ it('recovers an event missed while disconnected', function (): void {
 
     $page->waitForText('$3,300.00');
 });
+```
+
+When passed a Laravel broadcast event object, `emit()` derives every wire-level value from the event:
+
+- `broadcastOn()` supplies all channels and their public, private, or presence visibility.
+- `broadcastAs()` supplies the event name, falling back to the event class.
+- `broadcastWith()` supplies the payload, falling back to the event's public properties.
+
+The low-level form remains available for synthetic events and malformed-payload tests. The event name is the first argument:
+
+```php
+$realtime->emit(
+    event: LotSellingPriceUpdatedEvent::class,
+    channel: 'auctions.1',
+    payload: ['lot_selling_price' => 2200],
+);
 ```
 
 ### Connection controls

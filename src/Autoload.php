@@ -12,7 +12,7 @@ use Pest\Realtime\Drivers\EchoPusherDriver;
 use Pest\Realtime\Laravel\LaravelBroadcastCapture;
 use Pest\Realtime\Support\PestBrowserScriptExecutor;
 
-function realtime(
+function broadcasting(
     Webpage|AwaitableWebpage|PendingAwaitablePage $page,
     ?Driver $driver = null,
 ): RealtimeSession {

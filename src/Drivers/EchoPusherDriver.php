@@ -84,7 +84,7 @@ final class EchoPusherDriver implements Driver
                 const runtime = window.__pestRealtime;
 
                 if (!runtime || runtime.driver !== 'echo-pusher') {
-                    throw new Error('Pest Realtime is not installed on this page. Call realtime(\$page)->install() first.');
+                    throw new Error('Pest Realtime is not installed on this page. Call broadcasting(\$page)->install() first.');
                 }
 
                 return runtime[{$encodedMethod}](...{$encodedArguments});

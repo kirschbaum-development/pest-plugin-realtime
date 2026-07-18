@@ -8,7 +8,7 @@ use Pest\Realtime\EventDelivery;
 use Pest\Realtime\Tests\Fixtures\NamedPriceChanged;
 use Pest\Realtime\Tests\Support\FixtureServer;
 
-use function Pest\Realtime\realtime;
+use function Pest\Realtime\broadcasting;
 
 $fixtureServer = new FixtureServer();
 
@@ -79,20 +79,20 @@ it('simulates Echo Pusher events, dropped delivery, and connection recovery', fu
         })()
     JS);
 
-    $realtime = realtime($page)->install()
+    $broadcasting = broadcasting($page)->install()
         ->assertSubscribed('auctions.1')
         ->assertSubscribed('buyers.2', ChannelVisibility::Private)
         ->assertSubscribed('room.3', ChannelVisibility::Presence);
 
-    expect($realtime->status())->toBe(ConnectionStatus::Disconnected)
-        ->and($realtime->emit('PriceChanged', 'auctions.1', ['price' => 1200]))
+    expect($broadcasting->status())->toBe(ConnectionStatus::Disconnected)
+        ->and($broadcasting->emit('PriceChanged', 'auctions.1', ['price' => 1200]))
         ->toBe(EventDelivery::Dropped);
 
-    $realtime->connect();
+    $broadcasting->connect();
 
-    expect($realtime->emit('PriceChanged', 'auctions.1', ['price' => 1300]))
+    expect($broadcasting->emit('PriceChanged', 'auctions.1', ['price' => 1300]))
         ->toBe(EventDelivery::Delivered)
-        ->and($realtime->emit(new NamedPriceChanged(auctionId: 1, price: 1400)))
+        ->and($broadcasting->emit(new NamedPriceChanged(auctionId: 1, price: 1400)))
         ->toBe(EventDelivery::Delivered)
         ->and($page->script('window.__fakeRealtime.received'))
         ->toBe([
@@ -118,9 +118,9 @@ it('simulates Echo Pusher events, dropped delivery, and connection recovery', fu
             ],
         ]);
 
-    $realtime->disconnect()->fail()->reconnect();
+    $broadcasting->disconnect()->fail()->reconnect();
 
-    expect($realtime->status())->toBe(ConnectionStatus::Connected)
+    expect($broadcasting->status())->toBe(ConnectionStatus::Connected)
         ->and($page->script('window.__fakeRealtime.connection.state'))->toBe('connected')
         ->and($page->script('window.__fakeRealtime.transitions.length'))->toBe(6);
 });

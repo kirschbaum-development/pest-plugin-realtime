@@ -47,18 +47,18 @@ use App\Models\Auction;
 use Pest\Realtime\ChannelVisibility;
 use Pest\Realtime\ConnectionStatus;
 
-use function Pest\Realtime\realtime;
+use function Pest\Realtime\broadcasting;
 
 it('recovers an event missed while disconnected', function (): void {
     $auction = Auction::query()->findOrFail(1);
     $page = visit("/auctions/{$auction->id}/live");
 
-    $realtime = realtime($page)->install()
+    $broadcasting = broadcasting($page)->install()
         ->assertSubscribed('auctions.1')
         ->assertSubscribed('buyers.2', ChannelVisibility::Private)
         ->connect();
 
-    $broadcasts = $realtime->captureBroadcasts(
+    $broadcasts = $broadcasting->captureBroadcasts(
         fn () => $auction->update(['lot_selling_price' => 2200]),
     );
 
@@ -66,15 +66,15 @@ it('recovers an event missed while disconnected', function (): void {
 
     $page->waitForText('$2,200.00');
 
-    $realtime->disconnect();
+    $broadcasting->disconnect();
 
-    $broadcasts = $realtime->captureBroadcasts(
+    $broadcasts = $broadcasting->captureBroadcasts(
         fn () => $auction->update(['lot_selling_price' => 3300]),
     );
 
     expect($broadcasts->droppedCount())->toBe(1);
 
-    $realtime
+    $broadcasting
         ->transitionTo(ConnectionStatus::Failed)
         ->reconnect();
 
@@ -120,7 +120,7 @@ When passed a Laravel broadcast event object, `emit()` derives every wire-level 
 The low-level form remains available for synthetic events and malformed-payload tests. The event name is the first argument:
 
 ```php
-$realtime->emit(
+$broadcasting->emit(
     event: LotSellingPriceUpdatedEvent::class,
     channel: 'auctions.1',
     payload: ['lot_selling_price' => 2200],
@@ -130,20 +130,20 @@ $realtime->emit(
 ### Connection controls
 
 ```php
-$realtime->connect();
-$realtime->disconnect();
-$realtime->fail();
-$realtime->reconnect(); // reconnecting, then connected
-$realtime->transitionTo(ConnectionStatus::Reconnecting);
-$realtime->status();
+$broadcasting->connect();
+$broadcasting->disconnect();
+$broadcasting->fail();
+$broadcasting->reconnect(); // reconnecting, then connected
+$broadcasting->transitionTo(ConnectionStatus::Reconnecting);
+$broadcasting->status();
 ```
 
 ### Channel visibility
 
 ```php
-$realtime->assertSubscribed('news');
-$realtime->assertSubscribed('users.1', ChannelVisibility::Private);
-$realtime->assertSubscribed('rooms.1', ChannelVisibility::Presence);
+$broadcasting->assertSubscribed('news');
+$broadcasting->assertSubscribed('users.1', ChannelVisibility::Private);
+$broadcasting->assertSubscribed('rooms.1', ChannelVisibility::Presence);
 ```
 
 ## What it tests
@@ -176,10 +176,10 @@ Keep backend tests for channel authorization, event payload contracts, and broad
 
 ## Custom drivers
 
-Implement `Pest\Realtime\Contracts\Driver` and pass it to `realtime()`:
+Implement `Pest\Realtime\Contracts\Driver` and pass it to `broadcasting()`:
 
 ```php
-$realtime = realtime($page, new YourRealtimeDriver())->install();
+$broadcasting = broadcasting($page, new YourRealtimeDriver())->install();
 ```
 
 ## License

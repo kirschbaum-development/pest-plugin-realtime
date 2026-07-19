@@ -13,6 +13,7 @@ use Pest\Realtime\CapturedBroadcast;
 use Pest\Realtime\Contracts\BroadcastCapture;
 use Pest\Realtime\Exceptions\RealtimeSimulationException;
 use Throwable;
+use WeakMap;
 
 final class LaravelBroadcastCapture implements BroadcastCapture
 {
@@ -20,7 +21,8 @@ final class LaravelBroadcastCapture implements BroadcastCapture
 
     private const string DRIVER = 'pest-realtime-capture';
 
-    private bool $capturing = false;
+    /** @var WeakMap<BroadcastManager, true>|null */
+    private static ?WeakMap $capturing = null;
 
     public function __construct(
         private readonly BroadcastManager $manager,
@@ -57,7 +59,9 @@ final class LaravelBroadcastCapture implements BroadcastCapture
      */
     public function capture(Closure $callback): array
     {
-        if ($this->capturing) {
+        self::$capturing ??= new WeakMap();
+
+        if (isset(self::$capturing[$this->manager])) {
             throw RealtimeSimulationException::nestedBroadcastCapture();
         }
 
@@ -68,36 +72,46 @@ final class LaravelBroadcastCapture implements BroadcastCapture
             $originalConnections = [];
         }
 
-        $broadcaster = new CapturingBroadcaster();
+        $collector = new BroadcastCollector();
         $connections = [];
 
         foreach ($originalConnections as $name => $connection) {
             if (is_string($name)) {
-                $connections[$name] = ['driver' => self::DRIVER];
+                $connections[$name] = [
+                    'driver' => self::DRIVER,
+                    'connection' => $name,
+                ];
             }
         }
 
-        $connections[self::CONNECTION] = ['driver' => self::DRIVER];
+        $connections[self::CONNECTION] = [
+            'driver' => self::DRIVER,
+            'connection' => is_string($originalDefault) ? $originalDefault : null,
+        ];
 
         $this->manager->extend(
             self::DRIVER,
-            fn (): CapturingBroadcaster => $broadcaster,
+            fn (mixed $app, array $config): CapturingBroadcaster => new CapturingBroadcaster(
+                $collector,
+                is_string($config['connection'] ?? null) ? $config['connection'] : null,
+            ),
         );
 
-        $this->config->set('broadcasting.default', self::CONNECTION);
-        $this->config->set('broadcasting.connections', $connections);
-        $this->manager->forgetDrivers();
-        $this->capturing = true;
+        self::$capturing[$this->manager] = true;
 
         try {
+            $this->config->set('broadcasting.default', self::CONNECTION);
+            $this->config->set('broadcasting.connections', $connections);
+            $this->manager->forgetDrivers();
+
             $callback();
 
-            return $broadcaster->broadcasts();
+            return $collector->broadcasts();
         } finally {
             $this->config->set('broadcasting.default', $originalDefault);
             $this->config->set('broadcasting.connections', $originalConnections);
             $this->manager->forgetDrivers();
-            $this->capturing = false;
+            unset(self::$capturing[$this->manager]);
         }
     }
 }

@@ -62,6 +62,14 @@ final class RealtimeSimulationException extends RuntimeException
         return new self('Laravel broadcast captures cannot be nested.');
     }
 
+    public static function clientNotReady(int $timeoutMilliseconds): self
+    {
+        return new self(sprintf(
+            'Pest Realtime could not find an Echo/Pusher client within [%d] milliseconds. Ensure the page creates its Echo subscriptions before installing the simulator.',
+            $timeoutMilliseconds,
+        ));
+    }
+
     public static function unexpectedResult(string $operation, mixed $result): self
     {
         return new self(sprintf(

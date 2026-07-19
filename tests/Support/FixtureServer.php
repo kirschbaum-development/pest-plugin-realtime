@@ -34,7 +34,7 @@ final class FixtureServer
             '-S',
             '127.0.0.1:'.$this->port,
             '-t',
-            __DIR__.'/../Fixtures',
+            dirname(__DIR__, 2),
         ]);
         $this->process->start();
 
@@ -65,6 +65,6 @@ final class FixtureServer
             throw new RuntimeException('The browser fixture server has not started.');
         }
 
-        return 'http://127.0.0.1:'.$this->port;
+        return 'http://127.0.0.1:'.$this->port.'/tests/Fixtures/index.html';
     }
 }

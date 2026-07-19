@@ -15,10 +15,12 @@
         );
     const pusher = candidates[0];
 
-    if (!pusher?.connection || typeof pusher.connection.emit !== 'function') {
-        throw new Error(
-            'Pest Realtime could not find an Echo/Pusher connector. Ensure the page creates its Echo subscriptions before installing the simulator.',
-        );
+    if (!pusher) {
+        return null;
+    }
+
+    if (!pusher.connection || typeof pusher.connection.emit !== 'function') {
+        throw new Error('Pest Realtime found an incompatible Echo/Pusher connector.');
     }
 
     const channelId = (name, visibility) => {
@@ -33,62 +35,77 @@
         return name;
     };
 
-    const pusherStateFor = (status) => {
-        if (status === 'reconnecting') {
-            return 'connecting';
-        }
-
-        return status;
-    };
-
-    let status = 'disconnected';
+    const allowedStatuses = [
+        'initialized',
+        'connecting',
+        'connected',
+        'unavailable',
+        'failed',
+        'disconnected',
+    ];
+    const simulatedSocketId =
+        pusher.connection.socket_id ??
+        `pest-realtime.${Date.now()}.${Math.random().toString(16).slice(2)}`;
 
     window.__pestRealtime = {
         driver: 'echo-pusher',
         channels: () => Object.keys(pusher.channels?.channels ?? {}),
         emit: (name, event, payload, visibility = 'public') => {
-            if (status !== 'connected') {
-                return false;
-            }
-
             const id = channelId(name, visibility);
             const channel = pusher.channels?.channels?.[id];
 
-            if (!channel || typeof channel.emit !== 'function') {
-                throw new Error(
-                    `Pest Realtime could not find subscribed ${visibility} channel ${id}. Active channels: ${window.__pestRealtime.channels().join(', ')}`,
-                );
+            if (!channel) {
+                return 'not_subscribed';
             }
 
-            channel.emit(event, payload);
+            if (pusher.connection.state !== 'connected') {
+                return 'dropped';
+            }
 
-            return true;
+            if (typeof channel.handleEvent === 'function') {
+                channel.handleEvent({
+                    channel: id,
+                    event,
+                    data: payload,
+                });
+            } else if (typeof channel.emit === 'function') {
+                channel.emit(event, payload);
+            } else {
+                throw new Error(`Pest Realtime found an incompatible channel ${id}.`);
+            }
+
+            return 'delivered';
         },
         transitionTo: (nextStatus) => {
-            const allowed = [
-                'connected',
-                'disconnected',
-                'failed',
-                'reconnecting',
-            ];
-
-            if (!allowed.includes(nextStatus)) {
+            if (!allowedStatuses.includes(nextStatus)) {
                 throw new Error(`Unsupported realtime connection status: ${nextStatus}`);
             }
 
             const previousState = pusher.connection.state;
-            const nextState = pusherStateFor(nextStatus);
 
-            status = nextStatus;
-            pusher.connection.state = nextState;
+            if (previousState === nextStatus) {
+                return nextStatus;
+            }
+
+            const data = nextStatus === 'connected'
+                ? { socket_id: simulatedSocketId }
+                : undefined;
+
+            if (nextStatus === 'connected') {
+                pusher.connection.socket_id = simulatedSocketId;
+            }
+
+            pusher.connection.state = nextStatus;
             pusher.connection.emit('state_change', {
                 previous: previousState,
-                current: nextState,
+                current: nextStatus,
             });
+            pusher.connection.emit(nextStatus, data);
 
-            return status;
+            return nextStatus;
         },
-        status: () => status,
+        status: () => pusher.connection.state,
+        socketId: () => simulatedSocketId,
     };
 
     pusher.disconnect();

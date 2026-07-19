@@ -18,20 +18,33 @@ use Stringable;
 
 final readonly class RealtimeSession
 {
+    private const int DEFAULT_TIMEOUT_MILLISECONDS = 5_000;
+
+    private const int POLL_INTERVAL_MICROSECONDS = 50_000;
+
     public function __construct(
         private ScriptExecutor $executor,
         private Driver $driver,
         private ?BroadcastCapture $broadcastCapture = null,
     ) {}
 
-    public function install(): self
+    public function install(int $timeoutMilliseconds = self::DEFAULT_TIMEOUT_MILLISECONDS): self
     {
-        $this->parseChannels(
-            $this->executor->evaluate($this->driver->installScript()),
-            'install',
-        );
+        $deadline = microtime(true) + (max(0, $timeoutMilliseconds) / 1_000);
 
-        return $this;
+        do {
+            $result = $this->executor->evaluate($this->driver->installScript());
+
+            if ($result !== null) {
+                $this->parseChannels($result, 'install');
+
+                return $this;
+            }
+
+            usleep(self::POLL_INTERVAL_MICROSECONDS);
+        } while (microtime(true) < $deadline);
+
+        throw RealtimeSimulationException::clientNotReady($timeoutMilliseconds);
     }
 
     /**
@@ -48,13 +61,49 @@ final readonly class RealtimeSession
     public function assertSubscribed(
         string $channel,
         ChannelVisibility $visibility = ChannelVisibility::Public,
+        int $timeoutMilliseconds = self::DEFAULT_TIMEOUT_MILLISECONDS,
+    ): self {
+        return $this->waitForSubscription($channel, $visibility, $timeoutMilliseconds);
+    }
+
+    public function waitForSubscription(
+        string $channel,
+        ChannelVisibility $visibility = ChannelVisibility::Public,
+        int $timeoutMilliseconds = self::DEFAULT_TIMEOUT_MILLISECONDS,
     ): self {
         $channelId = $this->driver->channelId($channel, $visibility);
+        $deadline = microtime(true) + (max(0, $timeoutMilliseconds) / 1_000);
+        $channels = [];
+
+        do {
+            $channels = $this->channels();
+
+            if (in_array($channelId, $channels, true)) {
+                return $this;
+            }
+
+            usleep(self::POLL_INTERVAL_MICROSECONDS);
+        } while (microtime(true) < $deadline);
 
         Assert::assertContains(
             $channelId,
-            $this->channels(),
+            $channels,
             sprintf('Expected the page to be subscribed to realtime channel [%s].', $channelId),
+        );
+
+        return $this;
+    }
+
+    public function assertNotSubscribed(
+        string $channel,
+        ChannelVisibility $visibility = ChannelVisibility::Public,
+    ): self {
+        $channelId = $this->driver->channelId($channel, $visibility);
+
+        Assert::assertNotContains(
+            $channelId,
+            $this->channels(),
+            sprintf('Expected the page not to be subscribed to realtime channel [%s].', $channelId),
         );
 
         return $this;
@@ -100,7 +149,7 @@ final readonly class RealtimeSession
     public function reconnect(): self
     {
         return $this
-            ->transitionTo(ConnectionStatus::Reconnecting)
+            ->transitionTo(ConnectionStatus::Connecting)
             ->transitionTo(ConnectionStatus::Connected);
     }
 
@@ -143,16 +192,23 @@ final readonly class RealtimeSession
             foreach ($broadcast->channels as $wireChannel) {
                 [$channel, $visibility] = $this->parseWireChannel($wireChannel);
 
-                $deliveries[] = $this->emitToChannel(
+                $outcome = $this->emitToChannel(
                     $channel,
                     $broadcast->event,
                     $broadcast->payload,
                     $visibility,
                 );
+
+                $deliveries[] = new BroadcastDelivery(
+                    $broadcast,
+                    $channel,
+                    $visibility,
+                    $outcome,
+                );
             }
         }
 
-        return new BroadcastBatch(count($broadcasts), $deliveries);
+        return new BroadcastBatch($broadcasts, $deliveries);
     }
 
     private function emitBroadcastEvent(ShouldBroadcast $event): EventDelivery
@@ -175,8 +231,12 @@ final readonly class RealtimeSession
         $delivery = EventDelivery::Delivered;
 
         foreach ($channels as [$channel, $visibility]) {
-            if ($this->emitToChannel($channel, $eventName, $payload, $visibility) === EventDelivery::Dropped) {
+            $outcome = $this->emitToChannel($channel, $eventName, $payload, $visibility);
+
+            if ($outcome === EventDelivery::Dropped) {
                 $delivery = EventDelivery::Dropped;
+            } elseif ($outcome === EventDelivery::NotSubscribed && $delivery === EventDelivery::Delivered) {
+                $delivery = EventDelivery::NotSubscribed;
             }
         }
 
@@ -193,11 +253,11 @@ final readonly class RealtimeSession
             $this->driver->emitScript($channel, $event, $payload, $visibility),
         );
 
-        if (! is_bool($result)) {
+        if (! is_string($result) || EventDelivery::tryFrom($result) === null) {
             throw RealtimeSimulationException::unexpectedResult('emit', $result);
         }
 
-        return $result ? EventDelivery::Delivered : EventDelivery::Dropped;
+        return EventDelivery::from($result);
     }
 
     /**

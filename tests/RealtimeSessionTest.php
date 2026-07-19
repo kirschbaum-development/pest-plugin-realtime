@@ -26,7 +26,7 @@ it('installs, inspects subscriptions, and transitions connection state', functio
         ['auctions.1', 'private-buyers.2'],
         ConnectionStatus::Connected->value,
         ConnectionStatus::Connected->value,
-        ConnectionStatus::Reconnecting->value,
+        ConnectionStatus::Connecting->value,
         ConnectionStatus::Connected->value,
     ]);
     $session = new RealtimeSession($executor, new EchoPusherDriver());
@@ -43,17 +43,27 @@ it('installs, inspects subscriptions, and transitions connection state', functio
 });
 
 it('reports whether an event was delivered or dropped', function (): void {
-    $executor = new FakeScriptExecutor([true, false]);
+    $executor = new FakeScriptExecutor([
+        EventDelivery::Delivered->value,
+        EventDelivery::Dropped->value,
+        EventDelivery::NotSubscribed->value,
+    ]);
     $session = new RealtimeSession($executor, new EchoPusherDriver());
 
     expect($session->emit('PriceChanged', 'auctions.1', ['price' => 1200]))
         ->toBe(EventDelivery::Delivered)
         ->and($session->emit('PriceChanged', 'auctions.1', ['price' => 1300]))
-        ->toBe(EventDelivery::Dropped);
+        ->toBe(EventDelivery::Dropped)
+        ->and($session->emit('PriceChanged', 'missing.1', ['price' => 1400]))
+        ->toBe(EventDelivery::NotSubscribed);
 });
 
 it('derives channels, visibility, name, and payload from a broadcast event', function (): void {
-    $executor = new FakeScriptExecutor([true, true, true]);
+    $executor = new FakeScriptExecutor([
+        EventDelivery::Delivered->value,
+        EventDelivery::Delivered->value,
+        EventDelivery::Delivered->value,
+    ]);
     $session = new RealtimeSession($executor, new EchoPusherDriver());
 
     expect($session->emit(new NamedPriceChanged(auctionId: 1, price: 1200)))
@@ -65,7 +75,7 @@ it('derives channels, visibility, name, and payload from a broadcast event', fun
 });
 
 it('uses the event class and public properties when broadcast overrides are absent', function (): void {
-    $executor = new FakeScriptExecutor([true]);
+    $executor = new FakeScriptExecutor([EventDelivery::Delivered->value]);
     $session = new RealtimeSession($executor, new EchoPusherDriver());
 
     expect($session->emit(new PriceChanged(price: 1200)))
@@ -104,6 +114,33 @@ it('rejects malformed browser runtime responses', function (): void {
 
     expect(fn () => $session->install())
         ->toThrow(RealtimeSimulationException::class, 'unexpected result for [install]');
+});
+
+it('waits for the client and late channel subscriptions', function (): void {
+    $executor = new FakeScriptExecutor([
+        null,
+        [],
+        [],
+        ['auctions.1'],
+        ['auctions.1'],
+    ]);
+    $session = new RealtimeSession($executor, new EchoPusherDriver());
+
+    $session->install(timeoutMilliseconds: 100)
+        ->waitForSubscription('auctions.1', timeoutMilliseconds: 100)
+        ->assertNotSubscribed('buyers.2', ChannelVisibility::Private);
+
+    expect($executor->scripts)->toHaveCount(5);
+});
+
+it('reports when the Echo Pusher client does not become ready', function (): void {
+    $session = new RealtimeSession(
+        new FakeScriptExecutor([null]),
+        new EchoPusherDriver(),
+    );
+
+    expect(fn () => $session->install(timeoutMilliseconds: 0))
+        ->toThrow(RealtimeSimulationException::class, 'within [0] milliseconds');
 });
 
 it('encodes event data safely into the browser script', function (): void {

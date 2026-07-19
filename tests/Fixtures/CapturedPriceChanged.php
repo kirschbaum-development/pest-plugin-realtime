@@ -11,7 +11,10 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 
 final readonly class CapturedPriceChanged implements ShouldBroadcastNow
 {
-    public function __construct(public int $price) {}
+    public function __construct(
+        public int $price,
+        public ?string $socket = null,
+    ) {}
 
     /**
      * @return list<Channel>

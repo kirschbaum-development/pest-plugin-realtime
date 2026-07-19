@@ -20,107 +20,117 @@ afterAll(function () use ($fixtureServer): void {
     $fixtureServer->stop();
 });
 
-it('simulates Echo Pusher events, dropped delivery, and connection recovery', function () use ($fixtureServer): void {
+it('integrates with real Laravel Echo and pusher-js clients', function () use ($fixtureServer): void {
+    $page = visit($fixtureServer->url());
+
+    $broadcasting = broadcasting($page)->install()
+        ->assertSubscribed('auctions.1')
+        ->assertSubscribed('buyers.2', ChannelVisibility::Private)
+        ->assertSubscribed('room.3', ChannelVisibility::Presence)
+        ->assertNotSubscribed('missing.4');
+
+    $page->script(<<<'JS'
+        window.__realRealtime.received.length = 0;
+        window.__realRealtime.transitions.length = 0;
+        window.__realRealtime.namedTransitions.length = 0;
+    JS);
+
+    expect($broadcasting->status())->toBe(ConnectionStatus::Disconnected)
+        ->and($broadcasting->emit('price.changed', 'auctions.1', ['price' => 1200]))
+        ->toBe(EventDelivery::Dropped)
+        ->and($broadcasting->emit('price.changed', 'missing.4', ['price' => 1200]))
+        ->toBe(EventDelivery::NotSubscribed);
+
+    $broadcasting->connect();
+
+    expect($broadcasting->emit(new NamedPriceChanged(auctionId: 1, price: 1400)))
+        ->toBe(EventDelivery::Delivered)
+        ->and($broadcasting->emit('price.changed', 'missing.4', ['price' => 1400]))
+        ->toBe(EventDelivery::NotSubscribed)
+        ->and($page->script('window.__realRealtime.received'))
+        ->toBe([
+            [
+                'channel' => 'auctions.1',
+                'event' => 'price.changed',
+                'payload' => ['price' => 1400],
+            ],
+            [
+                'channel' => 'private-buyers.2',
+                'event' => 'price.changed',
+                'payload' => ['price' => 1400],
+            ],
+            [
+                'channel' => 'presence-room.3',
+                'event' => 'price.changed',
+                'payload' => ['price' => 1400],
+            ],
+        ]);
+
+    $broadcasting->transitionTo(ConnectionStatus::Unavailable);
+
+    expect($broadcasting->status())->toBe(ConnectionStatus::Unavailable)
+        ->and($page->script('window.fixtureEcho.connectionStatus()'))->toBe('failed');
+
+    $broadcasting->reconnect();
+
+    expect($broadcasting->status())->toBe(ConnectionStatus::Connected)
+        ->and($page->script('window.__realRealtime.connection.state'))->toBe('connected')
+        ->and($page->script('window.__realRealtime.transitions'))->toBe([
+            ['previous' => 'disconnected', 'current' => 'connected'],
+            ['previous' => 'connected', 'current' => 'unavailable'],
+            ['previous' => 'unavailable', 'current' => 'connecting'],
+            ['previous' => 'connecting', 'current' => 'connected'],
+        ])
+        ->and($page->script('window.__realRealtime.namedTransitions'))->toBe([
+            'connected',
+            'unavailable',
+            'connecting',
+            'connected',
+        ]);
+});
+
+it('supports an Echo instance exposed directly on window', function () use ($fixtureServer): void {
     $page = visit($fixtureServer->url());
 
     $page->script(<<<'JS'
         (() => {
-            const listeners = {};
             const received = [];
-            const transitions = [];
-
+            const listeners = {};
             const connection = {
                 state: 'connecting',
                 bind: (event, callback) => {
                     listeners[event] ??= [];
                     listeners[event].push(callback);
                 },
-                unbind: (event, callback) => {
-                    listeners[event] = (listeners[event] ?? []).filter(
-                        (listener) => listener !== callback,
-                    );
-                },
                 emit: (event, payload) => {
-                    if (event === 'state_change') {
-                        transitions.push(payload);
-                    }
-
                     for (const listener of listeners[event] ?? []) {
                         listener(payload);
                     }
                 },
             };
-
-            const makeChannel = (name) => ({
-                emit: (event, payload) => received.push({ name, event, payload }),
-            });
-
+            const channel = {
+                emit: (event, payload) => received.push({ event, payload }),
+            };
             const pusher = {
                 connection,
-                channels: {
-                    channels: {
-                        'auctions.1': makeChannel('auctions.1'),
-                        'private-buyers.2': makeChannel('private-buyers.2'),
-                        'presence-room.3': makeChannel('presence-room.3'),
-                    },
-                },
+                channels: { channels: { 'auctions.1': channel } },
                 disconnect: () => {
-                    const previous = connection.state;
                     connection.state = 'disconnected';
-                    connection.emit('state_change', {
-                        previous,
-                        current: 'disconnected',
-                    });
                 },
             };
 
+            delete window.__pestRealtime;
+            window.Pusher.instances.length = 0;
             window.Echo = { connector: { pusher } };
-            window.__fakeRealtime = { received, transitions, connection };
+            window.__fakeRealtime = { received };
         })()
     JS);
 
-    $broadcasting = broadcasting($page)->install()
-        ->assertSubscribed('auctions.1')
-        ->assertSubscribed('buyers.2', ChannelVisibility::Private)
-        ->assertSubscribed('room.3', ChannelVisibility::Presence);
+    $broadcasting = broadcasting($page)->install()->connect();
 
-    expect($broadcasting->status())->toBe(ConnectionStatus::Disconnected)
-        ->and($broadcasting->emit('PriceChanged', 'auctions.1', ['price' => 1200]))
-        ->toBe(EventDelivery::Dropped);
-
-    $broadcasting->connect();
-
-    expect($broadcasting->emit('PriceChanged', 'auctions.1', ['price' => 1300]))
+    expect($broadcasting->emit('price.changed', 'auctions.1', ['price' => 1500]))
         ->toBe(EventDelivery::Delivered)
-        ->and($broadcasting->emit(new NamedPriceChanged(auctionId: 1, price: 1400)))
-        ->toBe(EventDelivery::Delivered)
-        ->and($page->script('window.__fakeRealtime.received'))
-        ->toBe([
-            [
-                'name' => 'auctions.1',
-                'event' => 'PriceChanged',
-                'payload' => ['price' => 1300],
-            ],
-            [
-                'name' => 'auctions.1',
-                'event' => 'price.changed',
-                'payload' => ['price' => 1400],
-            ],
-            [
-                'name' => 'private-buyers.2',
-                'event' => 'price.changed',
-                'payload' => ['price' => 1400],
-            ],
-            [
-                'name' => 'presence-room.3',
-                'event' => 'price.changed',
-                'payload' => ['price' => 1400],
-            ],
+        ->and($page->script('window.__fakeRealtime.received'))->toBe([
+            ['event' => 'price.changed', 'payload' => ['price' => 1500]],
         ]);
-
-    $broadcasting->disconnect()->fail()->reconnect();
-
-    expect($broadcasting->status())->toBe(ConnectionStatus::Connected)
-        ->and($page->script('window.__fakeRealtime.connection.state'))->toBe('connected')
-        ->and($page->script('window.__fakeRealtime.transitions.length'))->toBe(6);
 });

@@ -8,4 +8,5 @@ enum EventDelivery: string
 {
     case Delivered = 'delivered';
     case Dropped = 'dropped';
+    case NotSubscribed = 'not_subscribed';
 }

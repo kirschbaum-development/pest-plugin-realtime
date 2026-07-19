@@ -7,6 +7,8 @@ Deterministically test realtime browser behavior, dropped events, and connection
 
 The first driver targets Laravel Echo with its Pusher-compatible connector, including Reverb, Pusher, and Ably's Pusher protocol. It operates at the existing Echo subscription boundary, so no realtime server is required during browser tests.
 
+The integration is tested in a real browser against Laravel Echo 2.x and pusher-js 8.x. The package does not install those JavaScript libraries in consuming applications; it uses the application's existing client.
+
 ## Requirements
 
 - PHP 8.3+
@@ -98,14 +100,26 @@ application code ──► observer/listener ──► Laravel broadcast event
                                 Echo simulator ──► page listener
 ```
 
-The capture scope always restores the original broadcasting configuration and resolved drivers, including when the callback throws. Its result reports the number of Laravel broadcast calls and their browser deliveries:
+The capture scope always restores the original broadcasting configuration and resolved drivers, including when the callback throws. Captures cannot be nested, even through separate `broadcasting()` sessions using the same Laravel application.
+
+Its result retains every final Laravel broadcast and the outcome for each channel:
 
 ```php
 $broadcasts->capturedCount();
 $broadcasts->deliveredCount();
 $broadcasts->droppedCount();
+$broadcasts->notSubscribedCount();
 $broadcasts->allDelivered();
+
+$broadcasts->broadcasts(); // list<CapturedBroadcast>
+$broadcasts->deliveries(); // list<BroadcastDelivery>
 ```
+
+Each `CapturedBroadcast` exposes its wire `channels`, `event`, and `payload`, along with the selected Laravel `connection` and any `socket` exclusion supplied by `toOthers()`. Each `BroadcastDelivery` links that capture to a normalized channel, its visibility, and a delivery outcome:
+
+- `Delivered`: the page registered the channel and its simulated connection was connected.
+- `Dropped`: the page registered the channel but its simulated connection was not connected.
+- `NotSubscribed`: this page did not register the channel. This is normal when an event broadcasts to several page types; replay continues to the remaining channels.
 
 Do not wrap the application event under test in `Event::fake()`: Laravel cannot run observers or broadcast listeners for an event that the test has suppressed.
 
@@ -127,24 +141,32 @@ $broadcasting->emit(
 );
 ```
 
+`emit()` injects the event at the browser's wire boundary. It does not dispatch the event through Laravel and therefore does not evaluate `broadcastWhen()`. Use `captureBroadcasts()` when the application dispatch path and Laravel's conditional broadcasting behavior are part of the test.
+
 ### Connection controls
 
 ```php
 $broadcasting->connect();
 $broadcasting->disconnect();
 $broadcasting->fail();
-$broadcasting->reconnect(); // reconnecting, then connected
-$broadcasting->transitionTo(ConnectionStatus::Reconnecting);
+$broadcasting->reconnect(); // connecting, then connected
+$broadcasting->transitionTo(ConnectionStatus::Unavailable);
 $broadcasting->status();
 ```
+
+The Echo/Pusher driver models Pusher's `initialized`, `connecting`, `connected`, `unavailable`, `failed`, and `disconnected` states. Every transition emits both Pusher's `state_change` event and the state-specific event, matching the real client's observable behavior. Echo normalizes Pusher's `unavailable` state to `failed` through `Echo.connectionStatus()`.
 
 ### Channel visibility
 
 ```php
-$broadcasting->assertSubscribed('news');
+$broadcasting->waitForSubscription('news');
+$broadcasting->assertSubscribed('news'); // waits up to five seconds by default
 $broadcasting->assertSubscribed('users.1', ChannelVisibility::Private);
 $broadcasting->assertSubscribed('rooms.1', ChannelVisibility::Presence);
+$broadcasting->assertNotSubscribed('admins.1', ChannelVisibility::Private);
 ```
+
+`install()` also waits up to five seconds for the page to create its Echo/Pusher client. Both timeouts can be overridden in milliseconds with `install(timeoutMilliseconds: ...)` and `waitForSubscription(..., timeoutMilliseconds: ...)`.
 
 ## What it tests
 
@@ -154,7 +176,7 @@ Pest test ──► simulator ──► Echo/Pusher channel ──► applicatio
 
 - Public, private, and presence subscriptions
 - Exact event names and payloads
-- Connected, disconnected, failed, and reconnecting states
+- Initialized, connecting, connected, unavailable, failed, and disconnected states
 - Events delivered while connected
 - Events dropped during an outage
 - Application resync behavior after recovery
@@ -170,7 +192,7 @@ It does not test:
 - TLS, proxy, or load-balancer configuration
 - Channel authorization endpoints
 
-`captureBroadcasts()` captures work dispatched in the test's PHP process. Broadcast jobs handled later by a separate queue worker and application requests triggered inside the browser run in other processes, so they are outside this in-memory capture scope. Use a synchronous queue for queued broadcasts you want to capture, or trigger and capture the underlying application action directly in the test.
+`captureBroadcasts()` captures work dispatched in the test's PHP process and replays the captured calls after the callback returns. Broadcast jobs handled later by a separate queue worker and application requests triggered inside the browser run in other processes, so they are outside this in-memory capture scope. Use a synchronous queue for queued broadcasts you want to capture, or trigger and capture the underlying application action directly in the test.
 
 Keep backend tests for channel authorization, event payload contracts, and broadcast failure tolerance. A future driver can use Playwright WebSocket routing when Pest Browser exposes that browser-context API publicly.
 

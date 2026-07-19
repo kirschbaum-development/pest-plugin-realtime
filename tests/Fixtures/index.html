@@ -5,5 +5,64 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Pest Realtime Fixture</title>
     </head>
-    <body></body>
+    <body>
+        <script src="/node_modules/pusher-js/dist/web/pusher.js"></script>
+        <script src="/node_modules/laravel-echo/dist/echo.iife.js"></script>
+        <script>
+            const received = [];
+            const transitions = [];
+            const namedTransitions = [];
+
+            window.fixtureEcho = new Echo.default({
+                broadcaster: 'reverb',
+                key: 'pest-realtime-fixture',
+                Pusher: window.Pusher,
+                wsHost: '127.0.0.1',
+                wsPort: 65535,
+                wssPort: 65535,
+                forceTLS: false,
+                enabledTransports: ['ws'],
+                disableStats: true,
+                authorizer: () => ({
+                    authorize: (_socketId, callback) => callback(null, {
+                        auth: 'fixture',
+                        channel_data: JSON.stringify({
+                            user_id: '1',
+                            user_info: { name: 'Fixture User' },
+                        }),
+                    }),
+                }),
+            });
+
+            const listen = (channel, name) => channel.listen('.price.changed', (payload) => {
+                received.push({ channel: name, event: 'price.changed', payload });
+            });
+
+            listen(window.fixtureEcho.channel('auctions.1'), 'auctions.1');
+            listen(window.fixtureEcho.private('buyers.2'), 'private-buyers.2');
+            listen(window.fixtureEcho.join('room.3'), 'presence-room.3');
+
+            const connection = window.fixtureEcho.connector.pusher.connection;
+
+            connection.bind('state_change', (transition) => transitions.push(transition));
+
+            for (const state of [
+                'initialized',
+                'connecting',
+                'connected',
+                'unavailable',
+                'failed',
+                'disconnected',
+            ]) {
+                connection.bind(state, () => namedTransitions.push(state));
+            }
+
+            window.__realRealtime = {
+                connection,
+                namedTransitions,
+                received,
+                transitions,
+            };
+        </script>
+    </body>
 </html>

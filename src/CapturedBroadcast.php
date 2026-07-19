@@ -14,5 +14,7 @@ final readonly class CapturedBroadcast
         public array $channels,
         public string $event,
         public array $payload,
+        public ?string $connection = null,
+        public ?string $socket = null,
     ) {}
 }

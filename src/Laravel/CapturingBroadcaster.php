@@ -9,8 +9,10 @@ use Pest\Realtime\CapturedBroadcast;
 
 final class CapturingBroadcaster extends NullBroadcaster
 {
-    /** @var list<CapturedBroadcast> */
-    private array $broadcasts = [];
+    public function __construct(
+        private readonly BroadcastCollector $collector,
+        private readonly ?string $connection,
+    ) {}
 
     /**
      * @param  array<array-key, string|\Stringable>  $channels
@@ -18,23 +20,21 @@ final class CapturingBroadcaster extends NullBroadcaster
      */
     public function broadcast(array $channels, $event, array $payload = []): void
     {
+        $socket = isset($payload['socket']) && is_string($payload['socket'])
+            ? $payload['socket']
+            : null;
+
         unset($payload['socket']);
 
-        $this->broadcasts[] = new CapturedBroadcast(
+        $this->collector->add(new CapturedBroadcast(
             channels: array_values(array_map(
                 static fn (string|\Stringable $channel): string => (string) $channel,
                 $channels,
             )),
             event: $event,
             payload: $payload,
-        );
-    }
-
-    /**
-     * @return list<CapturedBroadcast>
-     */
-    public function broadcasts(): array
-    {
-        return $this->broadcasts;
+            connection: $this->connection,
+            socket: $socket,
+        ));
     }
 }

@@ -3,7 +3,7 @@
     "private": true,
     "devDependencies": {
         "laravel-echo": "^2.3.7",
-        "playwright": "^1.61.0",
+        "playwright": "^1.62.0",
         "pusher-js": "^8.4.0"
     }
 }

@@ -6,3 +6,5 @@ composer.lock
 coverage.xml
 *.swp
 *.swo
+package-lock.json
+

@@ -17,6 +17,7 @@ use PHPUnit\Framework\Assert;
 use ReflectionClass;
 use ReflectionProperty;
 use Stringable;
+use WeakReference;
 
 /**
  * Drives the page's realtime client and records everything it receives.
@@ -37,8 +38,14 @@ final class Broadcasting
         private readonly Driver $driver,
         private readonly ?BroadcastCapture $broadcastCapture = null,
     ) {
-        $this->broadcastCapture?->start(function (CapturedBroadcast $broadcast): void {
-            $this->replay($broadcast);
+        $session = WeakReference::create($this);
+
+        $this->broadcastCapture?->start(static function (CapturedBroadcast $broadcast) use ($session): void {
+            $broadcasting = $session->get();
+
+            if ($broadcasting instanceof self) {
+                $broadcasting->replay($broadcast);
+            }
         });
     }
 

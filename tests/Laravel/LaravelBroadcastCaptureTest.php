@@ -134,13 +134,15 @@ it('restores broadcasting when the captured code throws', function (): void {
 });
 
 it('rejects a second session capturing the same application', function (): void {
-    [, $laravel] = laravelSession([]);
+    [$broadcasting, $laravel] = laravelSession([]);
 
     expect(fn () => new Broadcasting(
         new FakeScriptExecutor([]),
         new EchoPusherDriver(),
         LaravelBroadcastCapture::fromContainer($laravel->container),
     ))->toThrow(RealtimeException::class, 'already capturing broadcasts');
+
+    $broadcasting->stopCapturing();
 });
 
 it('refuses to capture while events are faked', function (): void {

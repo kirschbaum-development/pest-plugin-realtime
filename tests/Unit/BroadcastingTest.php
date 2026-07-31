@@ -5,12 +5,50 @@ declare(strict_types=1);
 use Illuminate\Broadcasting\PrivateChannel;
 use Pest\Realtime\Broadcasting;
 use Pest\Realtime\ConnectionStatus;
+use Pest\Realtime\Contracts\BroadcastCapture;
 use Pest\Realtime\Drivers\EchoPusherDriver;
 use Pest\Realtime\Exceptions\RealtimeException;
 use Pest\Realtime\Tests\Fakes\FakeScriptExecutor;
 use Pest\Realtime\Tests\Fixtures\NamedPriceChanged;
 use Pest\Realtime\Tests\Fixtures\PriceChanged;
 use PHPUnit\Framework\ExpectationFailedException;
+
+it('releases the session and stops capture when it goes out of scope', function (): void {
+    $capture = new class() implements BroadcastCapture
+    {
+        private bool $capturing = false;
+
+        private ?Closure $onBroadcast = null;
+
+        public function start(Closure $onBroadcast): void
+        {
+            $this->capturing = true;
+            $this->onBroadcast = $onBroadcast;
+        }
+
+        public function stop(): void
+        {
+            $this->capturing = false;
+            $this->onBroadcast = null;
+        }
+
+        public function capturing(): bool
+        {
+            return $this->capturing && $this->onBroadcast instanceof Closure;
+        }
+    };
+    $broadcasting = new Broadcasting(
+        new FakeScriptExecutor([]),
+        new EchoPusherDriver(),
+        $capture,
+    );
+    $session = WeakReference::create($broadcasting);
+
+    unset($broadcasting);
+
+    expect($session->get())->toBeNull()
+        ->and($capture->capturing())->toBeFalse();
+});
 
 it('installs and connects lazily on first use', function (): void {
     [$broadcasting, $executor] = session([['auctions.1', 'private-buyers.2']]);

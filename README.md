@@ -40,14 +40,13 @@ VITE_REVERB_PORT=65535
 VITE_REVERB_SCHEME=http
 ```
 
-Backend broadcasting can remain disabled. When `captureBroadcasts()` runs, the plugin temporarily replaces Laravel's configured broadcast connections and restores them afterward.
+Backend broadcasting can remain disabled. The session temporarily replaces Laravel's configured broadcast connections and restores them afterward.
 
 ## Usage
 
 ```php
 use App\Models\Auction;
-use Pest\Realtime\ChannelVisibility;
-use Pest\Realtime\ConnectionStatus;
+use Illuminate\Broadcasting\PrivateChannel;
 
 use function Pest\Realtime\broadcasting;
 
@@ -55,36 +54,29 @@ it('recovers an event missed while disconnected', function (): void {
     $auction = Auction::query()->findOrFail(1);
     $page = visit("/auctions/{$auction->id}/live");
 
-    $broadcasting = broadcasting($page)->install()
+    $broadcasting = broadcasting($page)
         ->assertSubscribed('auctions.1')
-        ->assertSubscribed('buyers.2', ChannelVisibility::Private)
-        ->connect();
+        ->assertSubscribed(new PrivateChannel('buyers.2'));
 
-    $broadcasts = $broadcasting->captureBroadcasts(
-        fn () => $auction->update(['lot_selling_price' => 2200]),
-    );
+    $auction->update(['lot_selling_price' => 2200]);
 
-    expect($broadcasts->allDelivered())->toBeTrue();
-
-    $page->waitForText('$2,200.00');
+    $broadcasting->assertDelivered('lot.price.changed');
+    $page->assertSee('$2,200.00');
 
     $broadcasting->disconnect();
 
-    $broadcasts = $broadcasting->captureBroadcasts(
-        fn () => $auction->update(['lot_selling_price' => 3300]),
-    );
+    $auction->update(['lot_selling_price' => 3300]);
 
-    expect($broadcasts->droppedCount())->toBe(1);
+    $broadcasting->assertDropped('lot.price.changed');
+    $broadcasting->fail()->reconnect();
 
-    $broadcasting
-        ->transitionTo(ConnectionStatus::Failed)
-        ->reconnect();
-
-    $page->waitForText('$3,300.00');
+    $page->assertSee('$3,300.00');
 });
 ```
 
-`captureBroadcasts()` runs the callback through the real application path. Model observers, event listeners, `broadcastWhen()`, `broadcastOn()`, `broadcastAs()`, `broadcastWith()`, and explicitly selected broadcast connections all run under Laravel's normal dispatcher. The plugin captures the final calls Laravel would make to its broadcaster and replays them through the simulated browser connection in order.
+There is no setup step. The browser runtime installs itself on the first realtime call, the simulated client starts connected, and inside a booted Laravel application the session captures the app's broadcasts and replays them into the page as they happen.
+
+Model observers, event listeners, `broadcastWhen()`, `broadcastOn()`, `broadcastAs()`, `broadcastWith()`, and explicitly selected broadcast connections all run under Laravel's normal dispatcher. The plugin captures the final calls Laravel would make to its broadcaster.
 
 ```text
 test callback
@@ -100,48 +92,109 @@ application code ──► observer/listener ──► Laravel broadcast event
                                 Echo simulator ──► page listener
 ```
 
-The capture scope always restores the original broadcasting configuration and resolved drivers, including when the callback throws. Captures cannot be nested, even through separate `broadcasting()` sessions using the same Laravel application.
+`ShouldBroadcast` events are run inline: the queue connection is switched to `sync` while capturing, and restored afterward. Broadcast jobs handled later by a separate queue worker, and application requests triggered inside the browser, run in other processes and stay outside this in-memory capture scope.
 
-Its result retains every final Laravel broadcast and the outcome for each channel:
+Do not wrap the application event under test in `Event::fake()`. Laravel cannot run observers or broadcast listeners for a suppressed event, so the session refuses to start and tells you why.
+
+### Assertions
 
 ```php
+$broadcasting->assertDelivered('lot.price.changed');
+$broadcasting->assertDelivered(LotPriceChanged::class);
+$broadcasting->assertDelivered('lot.price.changed', 2);
+$broadcasting->assertDeliveredTimes('lot.price.changed', 2);
+$broadcasting->assertDeliveredOn(new PrivateChannel('buyers.2'), 'lot.price.changed');
+$broadcasting->assertNotDelivered('lot.price.changed');
+$broadcasting->assertDropped('lot.price.changed');
+$broadcasting->assertNothingDropped();
+$broadcasting->assertBroadcast('lot.price.changed');
+$broadcasting->assertNotBroadcast('lot.price.changed');
+$broadcasting->assertNothingBroadcast();
+$broadcasting->assertConnected();
+$broadcasting->assertDisconnected();
+$broadcasting->assertSubscribed('auctions.1');
+$broadcasting->assertNotSubscribed(new PrivateChannel('admins.1'));
+```
+
+Every assertion returns the session, so they chain. Failures name the event and list what actually happened:
+
+```text
+The expected [lot.price.changed] broadcast was not dropped.
+Broadcasts sent: lot.price.changed on [auctions.1] (delivered), order.updated on [private-buyers.2] (not_subscribed).
+```
+
+A class string matches the wire name `broadcastAs()` would have produced, so both `LotPriceChanged::class` and `'lot.price.changed'` work.
+
+A closure narrows the match. It receives the `CapturedBroadcast`, since Laravel hands a broadcaster only the wire name and payload:
+
+```php
+use Pest\Realtime\CapturedBroadcast;
+
+$broadcasting->assertDelivered(
+    'lot.price.changed',
+    fn (CapturedBroadcast $broadcast): bool => $broadcast->payload['lot_selling_price'] === 2200,
+);
+```
+
+### Channels
+
+Channels accept Laravel's own vocabulary, a bare name, or the wire identifier you see in devtools:
+
+```php
+$broadcasting->assertSubscribed('auctions.1');
+$broadcasting->assertSubscribed(new PrivateChannel('buyers.2'));
+$broadcasting->assertSubscribed(new PresenceChannel('room.3'));
+$broadcasting->assertSubscribed('private-buyers.2');
+```
+
+`assertSubscribed()` waits for late subscriptions. The default timeout is Pest Browser's own assertion timeout, and can be overridden per call with `assertSubscribed(..., timeoutMilliseconds: 10_000)`.
+
+### Scoped capture
+
+When you want the broadcasts from one specific action rather than the whole test:
+
+```php
+$broadcasts = $broadcasting->capture(
+    fn () => $auction->update(['lot_selling_price' => 2200]),
+);
+
+$broadcasts->assertDelivered('lot.price.changed')->assertNothingDropped();
+
 $broadcasts->capturedCount();
 $broadcasts->deliveredCount();
 $broadcasts->droppedCount();
 $broadcasts->notSubscribedCount();
+$broadcasts->excludedCount();
 $broadcasts->allDelivered();
 
-$broadcasts->broadcasts(); // list<CapturedBroadcast>
-$broadcasts->deliveries(); // list<BroadcastDelivery>
+$broadcasts->broadcasts();  // Collection<CapturedBroadcast>
+$broadcasts->deliveries();  // Collection<Delivery>
 ```
 
-Each `CapturedBroadcast` exposes its wire `channels`, `event`, and `payload`, along with the selected Laravel `connection` and any `socket` exclusion supplied by `toOthers()`. Each `BroadcastDelivery` links that capture to a normalized channel, its visibility, and a delivery outcome:
+`$broadcasting->captured()` returns the same object for everything the session has sent.
+
+Each `CapturedBroadcast` exposes its wire `channels`, `event`, and `payload`, along with the selected Laravel `connection` and any `socket` exclusion supplied by `toOthers()`. Each `Delivery` links that capture to a normalized channel, its visibility, and an outcome:
 
 - `Delivered`: the page registered the channel and its simulated connection was connected.
 - `Dropped`: the page registered the channel but its simulated connection was not connected.
 - `NotSubscribed`: this page did not register the channel. This is normal when an event broadcasts to several page types; replay continues to the remaining channels.
+- `Excluded`: the broadcast excluded this page's socket through `toOthers()`.
 
-Do not wrap the application event under test in `Event::fake()`: Laravel cannot run observers or broadcast listeners for an event that the test has suppressed.
+### Emitting directly
 
-### Direct event emission
-
-When passed a Laravel broadcast event object, `emit()` derives every wire-level value from the event:
-
-- `broadcastOn()` supplies all channels and their public, private, or presence visibility.
-- `broadcastAs()` supplies the event name, falling back to the event class.
-- `broadcastWith()` supplies the payload, falling back to the event's public properties.
-
-The low-level form remains available for synthetic events and malformed-payload tests. The event name is the first argument:
+`broadcast()` pushes a Laravel event, deriving channels, name, and payload from `broadcastOn()`, `broadcastAs()`, and `broadcastWith()`:
 
 ```php
-$broadcasting->emit(
-    event: LotSellingPriceUpdatedEvent::class,
-    channel: 'auctions.1',
-    payload: ['lot_selling_price' => 2200],
-);
+$broadcasting->broadcast(new LotPriceChanged($auction));
 ```
 
-`emit()` injects the event at the browser's wire boundary. It does not dispatch the event through Laravel and therefore does not evaluate `broadcastWhen()`. Use `captureBroadcasts()` when the application dispatch path and Laravel's conditional broadcasting behavior are part of the test.
+`emit()` pushes a raw event at the wire boundary, for synthetic and malformed-payload tests:
+
+```php
+$broadcasting->emit('lot.price.changed', 'auctions.1', ['lot_selling_price' => 2200]);
+```
+
+Neither dispatches through Laravel, so neither evaluates `broadcastWhen()`. Let the application dispatch the event when its conditional broadcasting behavior is part of the test.
 
 ### Connection controls
 
@@ -149,6 +202,7 @@ $broadcasting->emit(
 $broadcasting->connect();
 $broadcasting->disconnect();
 $broadcasting->fail();
+$broadcasting->unavailable();
 $broadcasting->reconnect(); // connecting, then connected
 $broadcasting->transitionTo(ConnectionStatus::Unavailable);
 $broadcasting->status();
@@ -156,17 +210,30 @@ $broadcasting->status();
 
 The Echo/Pusher driver models Pusher's `initialized`, `connecting`, `connected`, `unavailable`, `failed`, and `disconnected` states. Every transition emits both Pusher's `state_change` event and the state-specific event, matching the real client's observable behavior. Echo normalizes Pusher's `unavailable` state to `failed` through `Echo.connectionStatus()`.
 
-### Channel visibility
+### Testing `toOthers()`
+
+The simulated client's socket id is available, so a broadcast that excludes it can be exercised end to end:
 
 ```php
-$broadcasting->waitForSubscription('news');
-$broadcasting->assertSubscribed('news'); // waits up to five seconds by default
-$broadcasting->assertSubscribed('users.1', ChannelVisibility::Private);
-$broadcasting->assertSubscribed('rooms.1', ChannelVisibility::Presence);
-$broadcasting->assertNotSubscribed('admins.1', ChannelVisibility::Private);
+Broadcast::socket($broadcasting->socketId());
+
+$auction->update(['lot_selling_price' => 2200]);
+
+$broadcasting->assertNotDelivered('lot.price.changed');
 ```
 
-`install()` also waits up to five seconds for the page to create its Echo/Pusher client. Both timeouts can be overridden in milliseconds with `install(timeoutMilliseconds: ...)` and `waitForSubscription(..., timeoutMilliseconds: ...)`.
+Capture runs in the test's PHP process, so `$socket` is only set when the test sets it. Requests the browser itself makes carry their own `X-Socket-ID` and are handled in another process.
+
+### Defaults
+
+Set once in `tests/Pest.php`:
+
+```php
+use Pest\Realtime\Realtime;
+
+Realtime::driver(new YourRealtimeDriver());
+Realtime::timeout(10_000);
+```
 
 ## What it tests
 
@@ -192,16 +259,16 @@ It does not test:
 - TLS, proxy, or load-balancer configuration
 - Channel authorization endpoints
 
-`captureBroadcasts()` captures work dispatched in the test's PHP process and replays the captured calls after the callback returns. Broadcast jobs handled later by a separate queue worker and application requests triggered inside the browser run in other processes, so they are outside this in-memory capture scope. Use a synchronous queue for queued broadcasts you want to capture, or trigger and capture the underlying application action directly in the test.
+One session captures one application at a time. Starting a second session against the same Laravel application throws; call `stopCapturing()` on the first, or let it go out of scope.
 
 Keep backend tests for channel authorization, event payload contracts, and broadcast failure tolerance. A future driver can use Playwright WebSocket routing when Pest Browser exposes that browser-context API publicly.
 
 ## Custom drivers
 
-Implement `Pest\Realtime\Contracts\Driver` and pass it to `broadcasting()`:
+Implement `Pest\Realtime\Contracts\Driver` and pass it to `broadcasting()`, or register it as the default:
 
 ```php
-$broadcasting = broadcasting($page, new YourRealtimeDriver())->install();
+$broadcasting = broadcasting($page, new YourRealtimeDriver());
 ```
 
 ## License

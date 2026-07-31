@@ -4,18 +4,23 @@ declare(strict_types=1);
 
 namespace Pest\Realtime\Laravel;
 
+use Closure;
 use Illuminate\Broadcasting\Broadcasters\NullBroadcaster;
 use Pest\Realtime\CapturedBroadcast;
+use Stringable;
 
 final class CapturingBroadcaster extends NullBroadcaster
 {
+    /**
+     * @param  Closure(CapturedBroadcast): void  $onBroadcast
+     */
     public function __construct(
-        private readonly BroadcastCollector $collector,
+        private readonly Closure $onBroadcast,
         private readonly ?string $connection,
     ) {}
 
     /**
-     * @param  array<array-key, string|\Stringable>  $channels
+     * @param  array<array-key, string|Stringable>  $channels
      * @param  array<array-key, mixed>  $payload
      */
     public function broadcast(array $channels, $event, array $payload = []): void
@@ -26,9 +31,9 @@ final class CapturingBroadcaster extends NullBroadcaster
 
         unset($payload['socket']);
 
-        $this->collector->add(new CapturedBroadcast(
+        ($this->onBroadcast)(new CapturedBroadcast(
             channels: array_values(array_map(
-                static fn (string|\Stringable $channel): string => (string) $channel,
+                static fn (string|Stringable $channel): string => (string) $channel,
                 $channels,
             )),
             event: $event,

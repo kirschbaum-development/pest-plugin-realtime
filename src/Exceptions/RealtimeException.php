@@ -6,16 +6,8 @@ namespace Pest\Realtime\Exceptions;
 
 use RuntimeException;
 
-final class RealtimeSimulationException extends RuntimeException
+final class RealtimeException extends RuntimeException
 {
-    public static function missingChannel(string $event): self
-    {
-        return new self(sprintf(
-            'Emitting the raw realtime event [%s] requires an explicit channel.',
-            $event,
-        ));
-    }
-
     public static function missingBroadcastChannels(object $event): self
     {
         return new self(sprintf(
@@ -42,30 +34,34 @@ final class RealtimeSimulationException extends RuntimeException
         ));
     }
 
-    public static function broadcastEventOverrides(object $event): self
-    {
-        return new self(sprintf(
-            'The broadcast event [%s] derives its channel, payload, and visibility; explicit overrides are not supported.',
-            $event::class,
-        ));
-    }
-
     public static function broadcastCaptureUnavailable(): self
     {
         return new self(
-            'Laravel broadcast capture is unavailable. Run captureBroadcasts() inside a booted Laravel application.',
+            'Laravel broadcast capture is unavailable. Run this inside a booted Laravel application.',
         );
     }
 
-    public static function nestedBroadcastCapture(): self
+    public static function captureAlreadyActive(): self
     {
-        return new self('Laravel broadcast captures cannot be nested.');
+        return new self(
+            'Another realtime session is already capturing broadcasts for this application. '
+            .'Call stopCapturing() on it before starting a second session.',
+        );
+    }
+
+    public static function eventsAreFaked(): self
+    {
+        return new self(
+            'Broadcast capture cannot run while events are faked. Laravel does not dispatch '
+            .'broadcast listeners for events suppressed by Event::fake(), so nothing would be captured.',
+        );
     }
 
     public static function clientNotReady(int $timeoutMilliseconds): self
     {
         return new self(sprintf(
-            'Pest Realtime could not find an Echo/Pusher client within [%d] milliseconds. Ensure the page creates its Echo subscriptions before installing the simulator.',
+            'Pest Realtime could not find an Echo/Pusher client within [%d] milliseconds. '
+            .'Ensure the page creates its Echo subscriptions before the first realtime assertion.',
             $timeoutMilliseconds,
         ));
     }
@@ -77,5 +73,10 @@ final class RealtimeSimulationException extends RuntimeException
             $operation,
             get_debug_type($result),
         ));
+    }
+
+    public static function runtimeUnavailable(): self
+    {
+        return new self('The Echo/Pusher browser runtime could not be loaded.');
     }
 }

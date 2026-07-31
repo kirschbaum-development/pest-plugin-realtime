@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-use Pest\Realtime\ChannelVisibility;
+use Illuminate\Broadcasting\PresenceChannel;
+use Illuminate\Broadcasting\PrivateChannel;
 use Pest\Realtime\ConnectionStatus;
-use Pest\Realtime\EventDelivery;
 use Pest\Realtime\Tests\Fixtures\NamedPriceChanged;
 use Pest\Realtime\Tests\Support\FixtureServer;
 
@@ -23,11 +23,7 @@ afterAll(function () use ($fixtureServer): void {
 it('integrates with real Laravel Echo and pusher-js clients', function () use ($fixtureServer): void {
     $page = visit($fixtureServer->url());
 
-    $broadcasting = broadcasting($page)->install()
-        ->assertSubscribed('auctions.1')
-        ->assertSubscribed('buyers.2', ChannelVisibility::Private)
-        ->assertSubscribed('room.3', ChannelVisibility::Presence)
-        ->assertNotSubscribed('missing.4');
+    $broadcasting = broadcasting($page)->install();
 
     $page->script(<<<'JS'
         window.__realRealtime.received.length = 0;
@@ -35,53 +31,61 @@ it('integrates with real Laravel Echo and pusher-js clients', function () use ($
         window.__realRealtime.namedTransitions.length = 0;
     JS);
 
-    expect($broadcasting->status())->toBe(ConnectionStatus::Disconnected)
-        ->and($broadcasting->emit('price.changed', 'auctions.1', ['price' => 1200]))
-        ->toBe(EventDelivery::Dropped)
-        ->and($broadcasting->emit('price.changed', 'missing.4', ['price' => 1200]))
-        ->toBe(EventDelivery::NotSubscribed);
+    $broadcasting
+        ->assertSubscribed('auctions.1')
+        ->assertSubscribed(new PrivateChannel('buyers.2'))
+        ->assertSubscribed(new PresenceChannel('room.3'))
+        ->assertNotSubscribed('missing.4')
+        ->assertConnected();
 
-    $broadcasting->connect();
+    $broadcasting->disconnect()
+        ->emit('price.changed', 'auctions.1', ['price' => 1200])
+        ->emit('price.changed', 'missing.4', ['price' => 1200])
+        ->assertDropped('price.changed')
+        ->assertNotDelivered('price.changed');
 
-    expect($broadcasting->emit(new NamedPriceChanged(auctionId: 1, price: 1400)))
-        ->toBe(EventDelivery::Delivered)
-        ->and($broadcasting->emit('price.changed', 'missing.4', ['price' => 1400]))
-        ->toBe(EventDelivery::NotSubscribed)
-        ->and($page->script('window.__realRealtime.received'))
-        ->toBe([
-            [
-                'channel' => 'auctions.1',
-                'event' => 'price.changed',
-                'payload' => ['price' => 1400],
-            ],
-            [
-                'channel' => 'private-buyers.2',
-                'event' => 'price.changed',
-                'payload' => ['price' => 1400],
-            ],
-            [
-                'channel' => 'presence-room.3',
-                'event' => 'price.changed',
-                'payload' => ['price' => 1400],
-            ],
-        ]);
+    expect($broadcasting->captured()->notSubscribedCount())->toBe(1);
 
-    $broadcasting->transitionTo(ConnectionStatus::Unavailable);
+    $broadcasting->connect()
+        ->broadcast(new NamedPriceChanged(auctionId: 1, price: 1400))
+        ->assertDeliveredTimes('price.changed', 3)
+        ->assertDeliveredOn(new PresenceChannel('room.3'), 'price.changed');
+
+    expect($page->script('window.__realRealtime.received'))->toBe([
+        [
+            'channel' => 'auctions.1',
+            'event' => 'price.changed',
+            'payload' => ['price' => 1400],
+        ],
+        [
+            'channel' => 'private-buyers.2',
+            'event' => 'price.changed',
+            'payload' => ['price' => 1400],
+        ],
+        [
+            'channel' => 'presence-room.3',
+            'event' => 'price.changed',
+            'payload' => ['price' => 1400],
+        ],
+    ]);
+
+    $broadcasting->unavailable();
 
     expect($broadcasting->status())->toBe(ConnectionStatus::Unavailable)
         ->and($page->script('window.fixtureEcho.connectionStatus()'))->toBe('failed');
 
-    $broadcasting->reconnect();
+    $broadcasting->reconnect()->assertConnected();
 
-    expect($broadcasting->status())->toBe(ConnectionStatus::Connected)
-        ->and($page->script('window.__realRealtime.connection.state'))->toBe('connected')
+    expect($page->script('window.__realRealtime.connection.state'))->toBe('connected')
         ->and($page->script('window.__realRealtime.transitions'))->toBe([
+            ['previous' => 'connected', 'current' => 'disconnected'],
             ['previous' => 'disconnected', 'current' => 'connected'],
             ['previous' => 'connected', 'current' => 'unavailable'],
             ['previous' => 'unavailable', 'current' => 'connecting'],
             ['previous' => 'connecting', 'current' => 'connected'],
         ])
         ->and($page->script('window.__realRealtime.namedTransitions'))->toBe([
+            'disconnected',
             'connected',
             'unavailable',
             'connecting',
@@ -126,11 +130,11 @@ it('supports an Echo instance exposed directly on window', function () use ($fix
         })()
     JS);
 
-    $broadcasting = broadcasting($page)->install()->connect();
+    broadcasting($page)
+        ->emit('price.changed', 'auctions.1', ['price' => 1500])
+        ->assertDelivered('price.changed');
 
-    expect($broadcasting->emit('price.changed', 'auctions.1', ['price' => 1500]))
-        ->toBe(EventDelivery::Delivered)
-        ->and($page->script('window.__fakeRealtime.received'))->toBe([
-            ['event' => 'price.changed', 'payload' => ['price' => 1500]],
-        ]);
+    expect($page->script('window.__fakeRealtime.received'))->toBe([
+        ['event' => 'price.changed', 'payload' => ['price' => 1500]],
+    ]);
 });

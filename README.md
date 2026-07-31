@@ -18,16 +18,8 @@ The integration is tested in a real browser against Laravel Echo 2.x and pusher-
 
 ## Installation
 
-Until the package is registered with Packagist, add its public GitHub repository to Composer once:
-
 ```bash
-composer config repositories.pest-plugin-realtime vcs https://github.com/kirschbaum-development/pest-plugin-realtime
-```
-
-Then install the tagged release:
-
-```bash
-composer require kirschbaum-development/pest-plugin-realtime --dev
+composer require kirschbaum-development/pest-plugin-realtime
 ```
 
 Your browser-test frontend must create its normal Echo subscriptions. It can point to a closed local port because the simulator stops the real client after the page loads.

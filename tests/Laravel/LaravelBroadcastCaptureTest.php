@@ -58,6 +58,19 @@ it('replays application broadcasts without a capture closure', function (): void
         ->and($executor->scripts[4])->toContain('"room.3","price.changed",{"price":1200},"presence"');
 });
 
+it('ignores broadcasts dispatched from another fiber', function (): void {
+    [$broadcasting, $laravel, $executor] = laravelSession([]);
+
+    $fiber = new Fiber(function () use ($laravel): void {
+        (new BroadcastEvent(new CapturedPriceChanged(price: 1200)))->handle($laravel->manager);
+    });
+
+    $fiber->start();
+
+    expect($broadcasting->captured()->capturedCount())->toBe(0)
+        ->and($executor->scripts)->toBe([]);
+});
+
 it('scopes capture() to the broadcasts its callback produced', function (): void {
     [$broadcasting, $laravel] = laravelSession([
         'delivered', 'delivered', 'not_subscribed',

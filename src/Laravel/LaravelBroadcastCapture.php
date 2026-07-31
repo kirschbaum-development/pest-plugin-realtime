@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Pest\Realtime\Laravel;
 
 use Closure;
+use Fiber;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository;
@@ -108,10 +109,20 @@ final class LaravelBroadcastCapture implements BroadcastCapture
                 : null,
         ];
 
+        $captureFiber = Fiber::getCurrent();
+
         $this->manager->extend(
             self::DRIVER,
             fn (mixed $app, array $config): CapturingBroadcaster => new CapturingBroadcaster(
-                static function (CapturedBroadcast $broadcast) use ($onBroadcast): void {
+                static function (CapturedBroadcast $broadcast) use ($captureFiber, $onBroadcast): void {
+                    // Pest Browser handles page requests in another Fiber within
+                    // this process. Those broadcasts are outside test-process
+                    // capture and replaying them synchronously would re-enter
+                    // Playwright while the page is waiting for its response.
+                    if (Fiber::getCurrent() !== $captureFiber) {
+                        return;
+                    }
+
                     $onBroadcast($broadcast);
                 },
                 is_string($config['connection'] ?? null) ? $config['connection'] : null,

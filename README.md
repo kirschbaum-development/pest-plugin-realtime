@@ -92,9 +92,30 @@ application code ──► observer/listener ──► Laravel broadcast event
                                 Echo simulator ──► page listener
 ```
 
-`ShouldBroadcast` events are run inline: the queue connection is switched to `sync` while capturing, and restored afterward. Broadcast jobs handled later by a separate queue worker, and application requests triggered inside the browser, run in other processes and stay outside this in-memory capture scope.
+`ShouldBroadcast` events are run inline: the queue connection is switched to `sync` while capturing, and restored afterward. Broadcast jobs handled later by a separate queue worker run in another process and stay outside this in-memory capture scope.
 
 Do not wrap the application event under test in `Event::fake()`. Laravel cannot run observers or broadcast listeners for a suppressed event, so the session refuses to start and tells you why.
+
+### Broadcasts from the page's own requests
+
+Pest Browser serves page requests in a separate Fiber. Replaying a broadcast from inside one would re-enter the browser while the page is still waiting for its response, so those broadcasts are held and replayed the next time the test reads the session:
+
+```php
+$page->click('Place bid');
+
+$broadcasting->assertDelivered('lot.price.changed'); // flushes, then asserts
+$page->assertSee('$2,200.00');
+```
+
+Every realtime read flushes first, so assertions, `channels()`, `status()`, and `capture()` all pick them up. When a page assertion is the next thing that needs them, flush explicitly:
+
+```php
+$page->click('Place bid');
+
+$broadcasting->flush();
+
+$page->assertSee('$2,200.00');
+```
 
 ### Assertions
 
@@ -114,6 +135,9 @@ $broadcasting->assertConnected();
 $broadcasting->assertDisconnected();
 $broadcasting->assertSubscribed('auctions.1');
 $broadcasting->assertNotSubscribed(new PrivateChannel('admins.1'));
+$broadcasting->assertDeliveredInOrder(['lot.opened', 'lot.price.changed', 'lot.closed']);
+$broadcasting->assertDeliveredVia('reverb', 'lot.price.changed');
+$broadcasting->assertNotDeliveredVia('pusher', 'lot.price.changed');
 ```
 
 Every assertion returns the session, so they chain. Failures name the event and list what actually happened:
@@ -136,18 +160,38 @@ $broadcasting->assertDelivered(
 );
 ```
 
+An array is the shorthand for the common case, matching the payload as a subset:
+
+```php
+$broadcasting->assertDelivered('lot.price.changed', ['lot_selling_price' => 2200]);
+```
+
+`assertDeliveredInOrder()` checks relative order, so unrelated broadcasts may arrive in between.
+
 ### Channels
 
-Channels accept Laravel's own vocabulary, a bare name, or the wire identifier you see in devtools:
+Channels accept Laravel's own vocabulary, an Eloquent model, a bare name, or the wire identifier you see in devtools:
 
 ```php
 $broadcasting->assertSubscribed('auctions.1');
 $broadcasting->assertSubscribed(new PrivateChannel('buyers.2'));
 $broadcasting->assertSubscribed(new PresenceChannel('room.3'));
+$broadcasting->assertSubscribed(new EncryptedPrivateChannel('vault.5'));
 $broadcasting->assertSubscribed('private-buyers.2');
+$broadcasting->assertSubscribed($post);  // private-App.Models.Post.1
+```
+
+A model resolves to the private channel Laravel's own conventions produce, which is what `BroadcastsEvents` and broadcast notifications use. That makes model broadcasting read directly:
+
+```php
+$post->update(['title' => 'Revised']);
+
+$broadcasting->assertDeliveredOn($post, 'PostUpdated');
 ```
 
 `assertSubscribed()` waits for late subscriptions. The default timeout is Pest Browser's own assertion timeout, and can be overridden per call with `assertSubscribed(..., timeoutMilliseconds: 10_000)`.
+
+Encrypted private channels are delivered to directly rather than through pusher-js's decryption path, since the simulator has no shared secret to encrypt with. The page's listener runs exactly as it would for a decrypted frame.
 
 ### Scoped capture
 
@@ -196,6 +240,75 @@ $broadcasting->emit('lot.price.changed', 'auctions.1', ['lot_selling_price' => 2
 
 Neither dispatches through Laravel, so neither evaluates `broadcastWhen()`. Let the application dispatch the event when its conditional broadcasting behavior is part of the test.
 
+Anonymous events need nothing special. `Broadcast::on(...)->as(...)->with(...)->send()` is an ordinary `ShouldBroadcast` event, so capture records it like any other.
+
+### Presence channels
+
+Membership is driven from the test, so `here()`, `joining()`, and `leaving()` in the page run against a roster you control:
+
+```php
+$broadcasting
+    ->here(new PresenceChannel('room.3'), [
+        ['id' => 1, 'name' => 'Ana'],
+    ])
+    ->joining(new PresenceChannel('room.3'), ['id' => 2, 'name' => 'Bo'])
+    ->leaving(new PresenceChannel('room.3'), 2);
+
+$broadcasting->assertMemberCount(new PresenceChannel('room.3'), 1);
+$broadcasting->assertMember(new PresenceChannel('room.3'), 1);
+$broadcasting->assertNotMember(new PresenceChannel('room.3'), 2);
+
+$broadcasting->members(new PresenceChannel('room.3')); // [1 => ['id' => 1, 'name' => 'Ana']]
+```
+
+The member array is the one a presence channel authorization callback returns, and its `id` becomes the member id unless you pass one. A bare name is treated as a presence channel here, so `here('room.3', ...)` also works.
+
+### Client events
+
+`whisper()` pushes a client event into the page, as another client's whisper would:
+
+```php
+$broadcasting->whisper('typing', new PrivateChannel('chat.1'), ['name' => 'Ana']);
+```
+
+Whispers the page itself sends are recorded, so a typing indicator can be asserted from the other side:
+
+```php
+$page->fill('#message', 'Hello');
+
+$broadcasting->assertWhispered('typing');
+$broadcasting->assertNotWhispered('resize');
+
+$broadcasting->whispers(); // Collection<Whisper>
+```
+
+Each `Whisper` exposes its `event`, wire `channel`, `payload`, and whether the simulated connection was `connected` at the time.
+
+### Notifications
+
+Broadcast notifications travel the same capture path, and assertions take the notifiable directly:
+
+```php
+$user->notify(new OrderShipped($order));
+
+$broadcasting->assertNotified($user, OrderShipped::class);
+$broadcasting->assertNotNotified($user, OrderCancelled::class);
+```
+
+A notifiable resolves to its private model channel. Pass a channel explicitly when the notifiable overrides `receivesBroadcastNotificationsOn()`. As with `Event::fake()`, do not wrap the notification under test in `Notification::fake()`; the session refuses to start and tells you why.
+
+### Failed subscriptions
+
+Channel authorization runs against your application's own endpoint and is out of the simulator's scope, but the client-side outcome of a refusal is not:
+
+```php
+$broadcasting->failSubscription(new PrivateChannel('orders.1'), status: 403);
+
+$page->assertSee('You no longer have access to this order.');
+```
+
+That fires Echo's `error()` callback with the same shape Pusher produces for a denied authorization.
+
 ### Connection controls
 
 ```php
@@ -241,12 +354,16 @@ Realtime::timeout(10_000);
 Pest test ──► simulator ──► Echo/Pusher channel ──► application listener
 ```
 
-- Public, private, and presence subscriptions
+- Public, private, presence, and encrypted private subscriptions
 - Exact event names and payloads
 - Initialized, connecting, connected, unavailable, failed, and disconnected states
 - Events delivered while connected
 - Events dropped during an outage
 - Application resync behavior after recovery
+- Presence rosters and join/leave churn
+- Client events in both directions
+- Broadcast notifications
+- The client-side outcome of a refused subscription
 
 ## Boundary and limitations
 
@@ -257,9 +374,11 @@ It does not test:
 - WebSocket handshakes or frames
 - Reverb/Pusher server behavior
 - TLS, proxy, or load-balancer configuration
-- Channel authorization endpoints
+- Channel authorization endpoints, only what the client does when one refuses
 
-One session captures one application at a time. Starting a second session against the same Laravel application throws; call `stopCapturing()` on the first, or let it go out of scope.
+One session captures one application at a time. Starting a second session against the same Laravel application throws; call `stopCapturing()` on the first, or let it go out of scope. Multi-client scenarios that need two pages sharing one capture are not supported yet.
+
+An event implementing `ShouldDispatchAfterCommit` is not dispatched until its transaction commits, which a transactional test never does. When nothing was captured and a transaction is open, the failure message says so.
 
 Keep backend tests for channel authorization, event payload contracts, and broadcast failure tolerance. A future driver can use Playwright WebSocket routing when Pest Browser exposes that browser-context API publicly.
 
@@ -270,6 +389,8 @@ Implement `Pest\Realtime\Contracts\Driver` and pass it to `broadcasting()`, or r
 ```php
 $broadcasting = broadcasting($page, new YourRealtimeDriver());
 ```
+
+`Driver` gained `presenceScript()`, `membersScript()`, `clientEventsScript()`, and `subscriptionErrorScript()` in 0.7.0, and `BroadcastCapture` gained `drainPending()` and `hint()`. Drivers and capture implementations written against 0.6 need those methods added.
 
 ## License
 

@@ -10,6 +10,7 @@ use Pest\Realtime\Drivers\EchoPusherDriver;
 use Pest\Realtime\Exceptions\RealtimeException;
 use Pest\Realtime\Tests\Fakes\FakeScriptExecutor;
 use Pest\Realtime\Tests\Fixtures\NamedPriceChanged;
+use Pest\Realtime\Tests\Fixtures\Post;
 use Pest\Realtime\Tests\Fixtures\PriceChanged;
 use PHPUnit\Framework\ExpectationFailedException;
 
@@ -36,6 +37,16 @@ it('releases the session and stops capture when it goes out of scope', function 
         {
             return $this->capturing && $this->onBroadcast instanceof Closure;
         }
+
+        public function drainPending(): array
+        {
+            return [];
+        }
+
+        public function hint(): ?string
+        {
+            return null;
+        }
     };
     $broadcasting = new Broadcasting(
         new FakeScriptExecutor([]),
@@ -48,6 +59,24 @@ it('releases the session and stops capture when it goes out of scope', function 
 
     expect($session->get())->toBeNull()
         ->and($capture->capturing())->toBeFalse();
+});
+
+it('accepts a model where a channel is expected', function (): void {
+    $post = new Post();
+    $post->id = 1;
+
+    $executor = new FakeScriptExecutor([
+        ['private-Pest.Realtime.Tests.Fixtures.Post.1'],
+        'connected',
+        ['private-Pest.Realtime.Tests.Fixtures.Post.1'],
+        'delivered',
+    ]);
+    $broadcasting = new Broadcasting($executor, new EchoPusherDriver());
+
+    $broadcasting
+        ->assertSubscribed($post)
+        ->emit('PostUpdated', $post, ['model' => ['id' => 1]])
+        ->assertDeliveredOn($post, 'PostUpdated');
 });
 
 it('installs and connects lazily on first use', function (): void {

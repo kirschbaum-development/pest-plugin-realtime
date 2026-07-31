@@ -9,6 +9,7 @@ use Pest\Realtime\ChannelVisibility;
 use Pest\Realtime\ConnectionStatus;
 use Pest\Realtime\Contracts\Driver;
 use Pest\Realtime\Exceptions\RealtimeException;
+use Pest\Realtime\PresenceEvent;
 
 final class EchoPusherDriver implements Driver
 {
@@ -57,12 +58,40 @@ final class EchoPusherDriver implements Driver
         ]);
     }
 
+    public function presenceScript(string $channel, PresenceEvent $event, mixed $payload): string
+    {
+        return $this->runtimeCall('presence', [$channel, $event->value, $payload]);
+    }
+
+    public function membersScript(string $channel): string
+    {
+        return $this->runtimeCall('members', [$channel]);
+    }
+
+    public function clientEventsScript(): string
+    {
+        return $this->runtimeCall('clientEvents');
+    }
+
+    public function subscriptionErrorScript(
+        string $channel,
+        ChannelVisibility $visibility,
+        mixed $payload,
+    ): string {
+        return $this->runtimeCall('subscriptionError', [
+            $channel,
+            $visibility->value,
+            $payload,
+        ]);
+    }
+
     public function channelId(string $channel, ChannelVisibility $visibility): string
     {
         return match ($visibility) {
             ChannelVisibility::Public => $channel,
             ChannelVisibility::Private => 'private-'.$channel,
             ChannelVisibility::Presence => 'presence-'.$channel,
+            ChannelVisibility::PrivateEncrypted => 'private-encrypted-'.$channel,
         };
     }
 

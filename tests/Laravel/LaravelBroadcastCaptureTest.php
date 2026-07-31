@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 use Illuminate\Broadcasting\Broadcasters\NullBroadcaster;
 use Illuminate\Broadcasting\BroadcastEvent;
+use Illuminate\Contracts\Notifications\Dispatcher as NotificationDispatcher;
 use Illuminate\Events\Dispatcher;
 use Illuminate\Support\Testing\Fakes\EventFake;
+use Illuminate\Support\Testing\Fakes\NotificationFake;
 use Pest\Realtime\Broadcasting;
 use Pest\Realtime\CapturedBroadcast;
 use Pest\Realtime\ChannelVisibility;
@@ -17,6 +19,7 @@ use Pest\Realtime\Tests\Fakes\FakeScriptExecutor;
 use Pest\Realtime\Tests\Fixtures\CapturedPriceChanged;
 use Pest\Realtime\Tests\Fixtures\PriceChanged;
 use Pest\Realtime\Tests\Support\LaravelBroadcastHarness;
+use PHPUnit\Framework\ExpectationFailedException;
 
 /**
  * @param  list<mixed>  $results
@@ -58,8 +61,12 @@ it('replays application broadcasts without a capture closure', function (): void
         ->and($executor->scripts[4])->toContain('"room.3","price.changed",{"price":1200},"presence"');
 });
 
-it('ignores broadcasts dispatched from another fiber', function (): void {
-    [$broadcasting, $laravel, $executor] = laravelSession([]);
+it('holds broadcasts from another fiber until the test fiber reads again', function (): void {
+    [$broadcasting, $laravel, $executor] = laravelSession([
+        'delivered',
+        'delivered',
+        'not_subscribed',
+    ]);
 
     $fiber = new Fiber(function () use ($laravel): void {
         (new BroadcastEvent(new CapturedPriceChanged(price: 1200)))->handle($laravel->manager);
@@ -67,8 +74,48 @@ it('ignores broadcasts dispatched from another fiber', function (): void {
 
     $fiber->start();
 
-    expect($broadcasting->captured()->capturedCount())->toBe(0)
-        ->and($executor->scripts)->toBe([]);
+    // Replaying inside the foreign fiber would re-enter the browser while the
+    // page is still waiting for its response, so nothing runs until we read.
+    expect($executor->scripts)->toBe([]);
+
+    $broadcasting->assertDelivered('price.changed');
+
+    expect($broadcasting->captured()->capturedCount())->toBe(1)
+        ->and($executor->scripts[2])->toContain('"auctions.1","price.changed",{"price":1200},"public"');
+});
+
+it('flushes broadcasts from another fiber on demand', function (): void {
+    [$broadcasting, $laravel, $executor] = laravelSession([
+        'delivered',
+        'delivered',
+        'not_subscribed',
+    ]);
+
+    $fiber = new Fiber(function () use ($laravel): void {
+        (new BroadcastEvent(new CapturedPriceChanged(price: 1200)))->handle($laravel->manager);
+    });
+
+    $fiber->start();
+
+    expect($broadcasting->flush())->toBe($broadcasting)
+        ->and($executor->scripts)->toHaveCount(5);
+});
+
+it('scopes capture() over broadcasts dispatched from another fiber', function (): void {
+    [$broadcasting, $laravel] = laravelSession([
+        'delivered', 'delivered', 'not_subscribed',
+    ]);
+
+    $captured = $broadcasting->capture(function () use ($laravel): void {
+        $fiber = new Fiber(function () use ($laravel): void {
+            (new BroadcastEvent(new CapturedPriceChanged(price: 3300)))->handle($laravel->manager);
+        });
+
+        $fiber->start();
+    });
+
+    expect($captured->capturedCount())->toBe(1)
+        ->and($captured->broadcasts()->first()?->payload)->toBe(['price' => 3300]);
 });
 
 it('scopes capture() to the broadcasts its callback produced', function (): void {
@@ -107,6 +154,16 @@ it('records the resolved Laravel connection and channel visibility', function ()
         ->and($deliveries[2]->channel)->toBe('room.3')
         ->and($deliveries[2]->visibility)->toBe(ChannelVisibility::Presence)
         ->and($deliveries[2]->outcome)->toBe(DeliveryOutcome::NotSubscribed);
+});
+
+it('asserts the Laravel connection a broadcast went through', function (): void {
+    [$broadcasting, $laravel] = laravelSession(['delivered', 'delivered', 'not_subscribed']);
+
+    (new BroadcastEvent(new CapturedPriceChanged(price: 1200)))->handle($laravel->manager);
+
+    $broadcasting
+        ->assertDeliveredVia('secondary', 'price.changed')
+        ->assertNotDeliveredVia('reverb', 'price.changed');
 });
 
 it('records the default connection when the event selects none', function (): void {
@@ -167,6 +224,82 @@ it('refuses to capture while events are faked', function (): void {
         new EchoPusherDriver(),
         LaravelBroadcastCapture::fromContainer($laravel->container),
     ))->toThrow(RealtimeException::class, 'while events are faked');
+});
+
+/**
+ * Stands in for Laravel's database manager at a given transaction depth.
+ */
+function fakeDatabase(int $transactionLevel): object
+{
+    return new class($transactionLevel)
+    {
+        public function __construct(private int $transactionLevel) {}
+
+        public function connection(): object
+        {
+            return new class($this->transactionLevel)
+            {
+                public function __construct(private int $transactionLevel) {}
+
+                public function transactionLevel(): int
+                {
+                    return $this->transactionLevel;
+                }
+            };
+        }
+    };
+}
+
+it('explains an open transaction when nothing was captured', function (): void {
+    [$broadcasting, $laravel] = laravelSession([]);
+
+    $laravel->container->instance('db', fakeDatabase(1));
+
+    expect(fn () => $broadcasting->assertDelivered('price.changed'))
+        ->toThrow(ExpectationFailedException::class, 'ShouldDispatchAfterCommit');
+});
+
+it('does not mention transactions when none is open', function (): void {
+    [$broadcasting, $laravel] = laravelSession([]);
+
+    $laravel->container->instance('db', fakeDatabase(0));
+
+    expect(fn () => $broadcasting->assertDelivered('price.changed'))
+        ->toThrow(ExpectationFailedException::class);
+
+    try {
+        $broadcasting->assertDelivered('price.changed');
+    } catch (ExpectationFailedException $failure) {
+        expect($failure->getMessage())->not->toContain('ShouldDispatchAfterCommit');
+    }
+});
+
+it('only explains transactions when the log is empty', function (): void {
+    [$broadcasting, $laravel] = laravelSession(['delivered', 'delivered', 'not_subscribed']);
+
+    $laravel->container->instance('db', fakeDatabase(1));
+
+    (new BroadcastEvent(new CapturedPriceChanged(price: 1200)))->handle($laravel->manager);
+
+    try {
+        $broadcasting->assertDelivered('order.updated');
+    } catch (ExpectationFailedException $failure) {
+        expect($failure->getMessage())->not->toContain('ShouldDispatchAfterCommit');
+    }
+});
+
+it('refuses to capture while notifications are faked', function (): void {
+    $laravel = new LaravelBroadcastHarness();
+    $laravel->container->instance(
+        NotificationDispatcher::class,
+        new NotificationFake(),
+    );
+
+    expect(fn () => new Broadcasting(
+        new FakeScriptExecutor([]),
+        new EchoPusherDriver(),
+        LaravelBroadcastCapture::fromContainer($laravel->container),
+    ))->toThrow(RealtimeException::class, 'while notifications are faked');
 });
 
 it('excludes the page when a broadcast targets other sockets', function (): void {

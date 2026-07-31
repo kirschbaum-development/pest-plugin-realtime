@@ -6,7 +6,7 @@
         <title>Pest Realtime Fixture</title>
     </head>
     <body>
-        <script src="/node_modules/pusher-js/dist/web/pusher.js"></script>
+        <script src="/node_modules/pusher-js/dist/web/pusher-with-encryption.js"></script>
         <script src="/node_modules/laravel-echo/dist/echo.iife.js"></script>
         <script>
             const received = [];
@@ -40,7 +40,25 @@
 
             listen(window.fixtureEcho.channel('auctions.1'), 'auctions.1');
             listen(window.fixtureEcho.private('buyers.2'), 'private-buyers.2');
-            listen(window.fixtureEcho.join('room.3'), 'presence-room.3');
+            const whispered = [];
+            const errors = [];
+
+            window.fixtureEcho
+                .private('buyers.2')
+                .listenForWhisper('typing', (payload) => whispered.push(payload))
+                .error((error) => errors.push(error));
+
+            const presence = { here: [], joining: [], leaving: [] };
+            const room = window.fixtureEcho.join('room.3');
+
+            listen(room, 'presence-room.3');
+
+            // Pusher hands the same member object to joining and leaving, and the
+            // browser bridge serializes a repeated reference as {ref}. Snapshot it.
+            room.here((users) => presence.here.push(users.map((user) => ({ ...user }))))
+                .joining((user) => presence.joining.push({ ...user }))
+                .leaving((user) => presence.leaving.push({ ...user }));
+            listen(window.fixtureEcho.encryptedPrivate('vault.5'), 'private-encrypted-vault.5');
 
             const connection = window.fixtureEcho.connector.pusher.connection;
 
@@ -59,9 +77,12 @@
 
             window.__realRealtime = {
                 connection,
+                errors,
                 namedTransitions,
+                presence,
                 received,
                 transitions,
+                whispered,
             };
         </script>
     </body>

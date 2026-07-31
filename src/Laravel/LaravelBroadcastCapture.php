@@ -10,7 +10,9 @@ use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Container\Container as ContainerContract;
+use Illuminate\Contracts\Notifications\Dispatcher as NotificationDispatcher;
 use Illuminate\Support\Testing\Fakes\EventFake;
+use Illuminate\Support\Testing\Fakes\NotificationFake;
 use Pest\Realtime\CapturedBroadcast;
 use Pest\Realtime\Contracts\BroadcastCapture;
 use Pest\Realtime\Exceptions\RealtimeException;
@@ -33,6 +35,9 @@ final class LaravelBroadcastCapture implements BroadcastCapture
     private static ?WeakMap $capturing = null;
 
     private bool $active = false;
+
+    /** @var list<CapturedBroadcast> */
+    private array $pending = [];
 
     private mixed $originalBroadcastDefault = null;
 
@@ -76,6 +81,66 @@ final class LaravelBroadcastCapture implements BroadcastCapture
         return $this->active;
     }
 
+    /**
+     * Holds a broadcast raised outside the test fiber.
+     *
+     * @internal
+     */
+    public function hold(CapturedBroadcast $broadcast): void
+    {
+        $this->pending[] = $broadcast;
+    }
+
+    /**
+     * Explains an empty capture log when a database transaction is open.
+     *
+     * Events implementing `ShouldDispatchAfterCommit` are held until commit, and
+     * a test that wraps itself in a transaction never commits, so the broadcast
+     * a test is waiting for is never dispatched at all.
+     */
+    public function hint(): ?string
+    {
+        if (! $this->container->bound('db')) {
+            return null;
+        }
+
+        try {
+            $database = $this->container->make('db');
+
+            if (! is_object($database) || ! method_exists($database, 'connection')) {
+                return null;
+            }
+
+            $connection = $database->connection();
+
+            if (! is_object($connection) || ! method_exists($connection, 'transactionLevel')) {
+                return null;
+            }
+
+            $level = $connection->transactionLevel();
+        } catch (Throwable) {
+            return null;
+        }
+
+        if (! is_int($level) || $level < 1) {
+            return null;
+        }
+
+        return 'A database transaction is open. Events implementing ShouldDispatchAfterCommit '
+            .'are not dispatched until it commits, which a transactional test never does.';
+    }
+
+    /**
+     * @return list<CapturedBroadcast>
+     */
+    public function drainPending(): array
+    {
+        $pending = $this->pending;
+        $this->pending = [];
+
+        return $pending;
+    }
+
     public function start(Closure $onBroadcast): void
     {
         if ($this->active) {
@@ -89,6 +154,7 @@ final class LaravelBroadcastCapture implements BroadcastCapture
         }
 
         $this->guardAgainstFakedEvents();
+        $this->guardAgainstFakedNotifications();
 
         $this->originalBroadcastDefault = $this->config->get('broadcasting.default');
         $originalConnections = $this->config->get('broadcasting.connections', []);
@@ -110,16 +176,19 @@ final class LaravelBroadcastCapture implements BroadcastCapture
         ];
 
         $captureFiber = Fiber::getCurrent();
+        $capture = $this;
 
         $this->manager->extend(
             self::DRIVER,
             fn (mixed $app, array $config): CapturingBroadcaster => new CapturingBroadcaster(
-                static function (CapturedBroadcast $broadcast) use ($captureFiber, $onBroadcast): void {
+                static function (CapturedBroadcast $broadcast) use ($captureFiber, $capture, $onBroadcast): void {
                     // Pest Browser handles page requests in another Fiber within
-                    // this process. Those broadcasts are outside test-process
-                    // capture and replaying them synchronously would re-enter
-                    // Playwright while the page is waiting for its response.
+                    // this process. Replaying one there would re-enter Playwright
+                    // while the page is still waiting for its response, so hold
+                    // it until the test fiber next reads the session.
                     if (Fiber::getCurrent() !== $captureFiber) {
+                        $capture->hold($broadcast);
+
                         return;
                     }
 
@@ -146,6 +215,7 @@ final class LaravelBroadcastCapture implements BroadcastCapture
         }
 
         $this->active = false;
+        $this->pending = [];
 
         $this->config->set('broadcasting.default', $this->originalBroadcastDefault);
         $this->config->set('broadcasting.connections', $this->originalBroadcastConnections);
@@ -206,6 +276,23 @@ final class LaravelBroadcastCapture implements BroadcastCapture
 
         if ($events instanceof EventFake) {
             throw RealtimeException::eventsAreFaked();
+        }
+    }
+
+    private function guardAgainstFakedNotifications(): void
+    {
+        if (! $this->container->bound(NotificationDispatcher::class)) {
+            return;
+        }
+
+        try {
+            $notifications = $this->container->make(NotificationDispatcher::class);
+        } catch (Throwable) {
+            return;
+        }
+
+        if ($notifications instanceof NotificationFake) {
+            throw RealtimeException::notificationsAreFaked();
         }
     }
 }

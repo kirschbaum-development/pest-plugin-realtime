@@ -22,4 +22,17 @@ interface BroadcastCapture
     public function stop(): void;
 
     public function capturing(): bool;
+
+    /**
+     * Returns and clears the broadcasts held back from the capture callback.
+     *
+     * @return list<CapturedBroadcast>
+     */
+    public function drainPending(): array;
+
+    /**
+     * An explanation for an empty capture log, when the application state
+     * suggests one, or null when nothing stands out.
+     */
+    public function hint(): ?string;
 }

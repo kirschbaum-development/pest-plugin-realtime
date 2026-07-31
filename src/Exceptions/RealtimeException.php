@@ -57,6 +57,46 @@ final class RealtimeException extends RuntimeException
         );
     }
 
+    public static function notificationsAreFaked(): self
+    {
+        return new self(
+            'Broadcast capture cannot run while notifications are faked. Notification::fake() '
+            .'stops notifications reaching the broadcast channel, so nothing would be captured.',
+        );
+    }
+
+    public static function notAPresenceChannel(string $channel): self
+    {
+        return new self(sprintf(
+            'The channel [%s] is not a presence channel, so it has no membership to drive.',
+            $channel,
+        ));
+    }
+
+    public static function missingMemberId(): self
+    {
+        return new self(
+            'The presence member did not provide a member id. Add an [id] key to the member '
+            .'data, or pass the id explicitly.',
+        );
+    }
+
+    public static function channelNotSubscribed(string $channel): self
+    {
+        return new self(sprintf(
+            'The page is not subscribed to the channel [%s].',
+            $channel,
+        ));
+    }
+
+    public static function presenceChannelNotSubscribed(string $channel): self
+    {
+        return new self(sprintf(
+            'The page is not subscribed to the presence channel [%s].',
+            $channel,
+        ));
+    }
+
     public static function clientNotReady(int $timeoutMilliseconds): self
     {
         return new self(sprintf(

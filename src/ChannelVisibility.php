@@ -9,4 +9,5 @@ enum ChannelVisibility: string
     case Public = 'public';
     case Private = 'private';
     case Presence = 'presence';
+    case PrivateEncrypted = 'private-encrypted';
 }

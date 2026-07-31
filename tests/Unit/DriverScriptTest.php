@@ -10,7 +10,9 @@ it('normalizes Echo channel identifiers', function (): void {
 
     expect($driver->channelId('auctions.1', ChannelVisibility::Public))->toBe('auctions.1')
         ->and($driver->channelId('buyers.2', ChannelVisibility::Private))->toBe('private-buyers.2')
-        ->and($driver->channelId('room.3', ChannelVisibility::Presence))->toBe('presence-room.3');
+        ->and($driver->channelId('room.3', ChannelVisibility::Presence))->toBe('presence-room.3')
+        ->and($driver->channelId('vault.5', ChannelVisibility::PrivateEncrypted))
+        ->toBe('private-encrypted-vault.5');
 });
 
 it('encodes event data safely into the browser script', function (): void {

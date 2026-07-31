@@ -6,8 +6,11 @@ namespace Pest\Realtime;
 
 use Closure;
 use Illuminate\Broadcasting\Channel;
+use Illuminate\Contracts\Broadcasting\HasBroadcastChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Contracts\Support\Arrayable;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use Pest\Realtime\Contracts\BroadcastCapture;
 use Pest\Realtime\Contracts\Driver;
 use Pest\Realtime\Contracts\ScriptExecutor;
@@ -16,6 +19,7 @@ use Pest\Realtime\Support\Channels;
 use PHPUnit\Framework\Assert;
 use ReflectionClass;
 use ReflectionProperty;
+use stdClass;
 use Stringable;
 use WeakReference;
 
@@ -107,16 +111,33 @@ final class Broadcasting
     public function channels(): array
     {
         return $this->parseChannels(
-            $this->install()->executor->evaluate($this->driver->channelsScript()),
+            $this->flush()->install()->executor->evaluate($this->driver->channelsScript()),
             'channels',
         );
+    }
+
+    /**
+     * Replays broadcasts the application made while handling a browser request.
+     *
+     * Pest Browser serves page requests in another Fiber, where pushing into the
+     * page would re-enter the browser mid-request, so those broadcasts are held
+     * until the test asks for them. Every realtime read flushes first; call this
+     * directly when a page assertion, rather than a realtime one, comes next.
+     */
+    public function flush(): self
+    {
+        foreach ($this->broadcastCapture?->drainPending() ?? [] as $broadcast) {
+            $this->replay($broadcast);
+        }
+
+        return $this;
     }
 
     /**
      * Asserts the page subscribed to the channel, waiting for late subscriptions.
      */
     public function assertSubscribed(
-        Channel|string $channel,
+        Channel|HasBroadcastChannel|string $channel,
         ?int $timeoutMilliseconds = null,
     ): self {
         [$name, $visibility] = Channels::parse($channel);
@@ -147,7 +168,7 @@ final class Broadcasting
         return $this;
     }
 
-    public function assertNotSubscribed(Channel|string $channel): self
+    public function assertNotSubscribed(Channel|HasBroadcastChannel|string $channel): self
     {
         [$name, $visibility] = Channels::parse($channel);
         $channelId = $this->driver->channelId($name, $visibility);
@@ -161,9 +182,137 @@ final class Broadcasting
         return $this;
     }
 
+    /**
+     * Seeds a presence channel's roster, firing Echo's `here()` callback.
+     *
+     * @param  list<array<array-key, mixed>>  $members
+     */
+    public function here(Channel|HasBroadcastChannel|string $channel, array $members): self
+    {
+        $ids = [];
+        $hash = new stdClass();
+
+        foreach ($members as $member) {
+            $id = (string) $this->memberId($member);
+            $ids[] = $id;
+            $hash->{$id} = $member;
+        }
+
+        return $this->presence($channel, PresenceEvent::Here, [
+            'presence' => ['ids' => $ids, 'hash' => $hash, 'count' => count($ids)],
+        ]);
+    }
+
+    /**
+     * Adds a member, firing Echo's `joining()` callback.
+     *
+     * The id defaults to the member data's `id`, matching the array a presence
+     * channel authorization callback returns.
+     *
+     * @param  array<array-key, mixed>  $member
+     */
+    public function joining(
+        Channel|HasBroadcastChannel|string $channel,
+        array $member,
+        string|int|null $id = null,
+    ): self {
+        return $this->presence($channel, PresenceEvent::Joined, [
+            'user_id' => $id ?? $this->memberId($member),
+            'user_info' => $member,
+        ]);
+    }
+
+    /**
+     * Removes a member, firing Echo's `leaving()` callback.
+     */
+    public function leaving(Channel|HasBroadcastChannel|string $channel, string|int $id): self
+    {
+        return $this->presence($channel, PresenceEvent::Left, ['user_id' => $id]);
+    }
+
+    /**
+     * The presence channel's roster, keyed by member id.
+     *
+     * @return array<array-key, mixed>
+     */
+    public function members(Channel|HasBroadcastChannel|string $channel): array
+    {
+        $name = $this->presenceChannel($channel);
+
+        $result = $this->flush()->install()->executor->evaluate(
+            $this->driver->membersScript($name),
+        );
+
+        if ($result === 'not_subscribed') {
+            throw RealtimeException::presenceChannelNotSubscribed(
+                Channels::toWire($name, ChannelVisibility::Presence),
+            );
+        }
+
+        if (! is_array($result)) {
+            throw RealtimeException::unexpectedResult('members', $result);
+        }
+
+        return $result;
+    }
+
+    public function assertMemberCount(Channel|HasBroadcastChannel|string $channel, int $count): self
+    {
+        $members = $this->members($channel);
+
+        Assert::assertCount(
+            $count,
+            $members,
+            sprintf(
+                'Expected [%s] to have %d %s, found %d. %s',
+                $this->presenceWire($channel),
+                $count,
+                Str::plural('member', $count),
+                count($members),
+                $this->memberSummary($members),
+            ),
+        );
+
+        return $this;
+    }
+
+    public function assertMember(Channel|HasBroadcastChannel|string $channel, string|int $id): self
+    {
+        $members = $this->members($channel);
+
+        Assert::assertTrue(
+            $this->hasMember($members, $id),
+            sprintf(
+                'Expected [%s] to have member [%s]. %s',
+                $this->presenceWire($channel),
+                $id,
+                $this->memberSummary($members),
+            ),
+        );
+
+        return $this;
+    }
+
+    public function assertNotMember(Channel|HasBroadcastChannel|string $channel, string|int $id): self
+    {
+        $members = $this->members($channel);
+
+        Assert::assertFalse(
+            $this->hasMember($members, $id),
+            sprintf(
+                'Expected [%s] not to have member [%s]. %s',
+                $this->presenceWire($channel),
+                $id,
+                $this->memberSummary($members),
+            ),
+        );
+
+        return $this;
+    }
+
     public function status(): ConnectionStatus
     {
-        $result = $this->install()->executor->evaluate($this->driver->statusScript());
+        $result = $this->flush()->install()->executor->evaluate($this->driver->statusScript());
 
         if (! is_string($result) || ConnectionStatus::tryFrom($result) === null) {
             throw RealtimeException::unexpectedResult('status', $result);
@@ -296,7 +445,7 @@ final class Broadcasting
      *
      * @param  array<array-key, mixed>  $payload
      */
-    public function emit(string $event, Channel|string $channel, array $payload = []): self
+    public function emit(string $event, Channel|HasBroadcastChannel|string $channel, array $payload = []): self
     {
         [$name, $visibility] = Channels::parse($channel);
 
@@ -310,6 +459,114 @@ final class Broadcasting
     }
 
     /**
+     * Refuses a channel subscription, firing Echo's `error()` callback.
+     *
+     * Channel authorization itself runs against the application's own endpoint
+     * and is out of this simulator's scope; this drives the client-side outcome
+     * a refusal produces.
+     */
+    public function failSubscription(
+        Channel|HasBroadcastChannel|string $channel,
+        int $status = 403,
+        string $message = 'Unable to authorize channel',
+    ): self {
+        [$name, $visibility] = Channels::parse($channel);
+
+        $result = $this->install()->executor->evaluate(
+            $this->driver->subscriptionErrorScript($name, $visibility, [
+                'type' => 'AuthError',
+                'error' => $message,
+                'status' => $status,
+            ]),
+        );
+
+        if ($result === 'not_subscribed') {
+            throw RealtimeException::channelNotSubscribed(Channels::toWire($name, $visibility));
+        }
+
+        if ($result !== 'ok') {
+            throw RealtimeException::unexpectedResult('subscriptionError', $result);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Pushes a client event into the page, as another client's whisper would.
+     *
+     * Echo receives it through `listenForWhisper()`.
+     *
+     * @param  array<array-key, mixed>  $payload
+     */
+    public function whisper(string $event, Channel|HasBroadcastChannel|string $channel, array $payload = []): self
+    {
+        return $this->emit('client-'.$event, $channel, $payload);
+    }
+
+    /**
+     * The client events the page has whispered.
+     *
+     * @return Collection<int, Whisper>
+     */
+    public function whispers(): Collection
+    {
+        $result = $this->install()->executor->evaluate($this->driver->clientEventsScript());
+
+        if (! is_array($result)) {
+            throw RealtimeException::unexpectedResult('clientEvents', $result);
+        }
+
+        $whispers = [];
+
+        foreach ($result as $record) {
+            if (! is_array($record)) {
+                throw RealtimeException::unexpectedResult('clientEvents', $result);
+            }
+
+            $whispers[] = new Whisper(
+                event: is_string($record['event'] ?? null) ? $record['event'] : '',
+                channel: is_string($record['channel'] ?? null) ? $record['channel'] : '',
+                payload: is_array($record['payload'] ?? null) ? $record['payload'] : [],
+                connected: (bool) ($record['connected'] ?? false),
+            );
+        }
+
+        return new Collection($whispers);
+    }
+
+    public function assertWhispered(string $event, ?Closure $callback = null): self
+    {
+        $whispers = $this->whispers();
+
+        Assert::assertTrue(
+            $this->matchingWhispers($whispers, $event, $callback)->isNotEmpty(),
+            sprintf(
+                "The expected [%s] client event was not sent.\n%s",
+                $event,
+                $this->whisperSummary($whispers),
+            ),
+        );
+
+        return $this;
+    }
+
+    public function assertNotWhispered(string $event, ?Closure $callback = null): self
+    {
+        $whispers = $this->whispers();
+
+        Assert::assertTrue(
+            $this->matchingWhispers($whispers, $event, $callback)->isEmpty(),
+            sprintf(
+                "The unexpected [%s] client event was sent.\n%s",
+                $event,
+                $this->whisperSummary($whispers),
+            ),
+        );
+
+        return $this;
+    }
+
+    /**
      * Runs the callback and returns only the broadcasts it produced.
      */
     public function capture(Closure $callback): CapturedBroadcasts
@@ -318,11 +575,14 @@ final class Broadcasting
             throw RealtimeException::broadcastCaptureUnavailable();
         }
 
-        $offset = count($this->deliveries);
+        $offset = count($this->flush()->deliveries);
 
         $callback();
 
-        return new CapturedBroadcasts(array_slice($this->deliveries, $offset));
+        return new CapturedBroadcasts(
+            array_slice($this->flush()->deliveries, $offset),
+            $this->broadcastCapture->hint(),
+        );
     }
 
     /**
@@ -330,10 +590,16 @@ final class Broadcasting
      */
     public function captured(): CapturedBroadcasts
     {
-        return new CapturedBroadcasts($this->deliveries);
+        return new CapturedBroadcasts(
+            $this->flush()->deliveries,
+            $this->broadcastCapture?->hint(),
+        );
     }
 
-    public function assertDelivered(string $event, Closure|int|null $callback = null): self
+    /**
+     * @param  Closure|array<array-key, mixed>|int|null  $callback  An array matches the payload as a subset.
+     */
+    public function assertDelivered(string $event, Closure|array|int|null $callback = null): self
     {
         $this->captured()->assertDelivered($event, $callback);
 
@@ -347,24 +613,71 @@ final class Broadcasting
         return $this;
     }
 
+    /**
+     * @param  Closure|array<array-key, mixed>|null  $callback  An array matches the payload as a subset.
+     */
     public function assertDeliveredOn(
-        Channel|string $channel,
+        Channel|HasBroadcastChannel|string $channel,
         string $event,
-        ?Closure $callback = null,
+        Closure|array|null $callback = null,
     ): self {
         $this->captured()->assertDeliveredOn($channel, $event, $callback);
 
         return $this;
     }
 
-    public function assertNotDelivered(string $event, ?Closure $callback = null): self
+    /**
+     * Asserts the events reached the page in the given relative order.
+     *
+     * @param  list<string>  $events
+     */
+    public function assertDeliveredInOrder(array $events): self
+    {
+        $this->captured()->assertDeliveredInOrder($events);
+
+        return $this;
+    }
+
+    /**
+     * @param  Closure|array<array-key, mixed>|null  $callback  An array matches the payload as a subset.
+     */
+    public function assertDeliveredVia(
+        string $connection,
+        string $event,
+        Closure|array|null $callback = null,
+    ): self {
+        $this->captured()->assertDeliveredVia($connection, $event, $callback);
+
+        return $this;
+    }
+
+    /**
+     * @param  Closure|array<array-key, mixed>|null  $callback  An array matches the payload as a subset.
+     */
+    public function assertNotDeliveredVia(
+        string $connection,
+        string $event,
+        Closure|array|null $callback = null,
+    ): self {
+        $this->captured()->assertNotDeliveredVia($connection, $event, $callback);
+
+        return $this;
+    }
+
+    /**
+     * @param  Closure|array<array-key, mixed>|null  $callback  An array matches the payload as a subset.
+     */
+    public function assertNotDelivered(string $event, Closure|array|null $callback = null): self
     {
         $this->captured()->assertNotDelivered($event, $callback);
 
         return $this;
     }
 
-    public function assertDropped(string $event, Closure|int|null $callback = null): self
+    /**
+     * @param  Closure|array<array-key, mixed>|int|null  $callback  An array matches the payload as a subset.
+     */
+    public function assertDropped(string $event, Closure|array|int|null $callback = null): self
     {
         $this->captured()->assertDropped($event, $callback);
 
@@ -378,14 +691,47 @@ final class Broadcasting
         return $this;
     }
 
-    public function assertBroadcast(string $event, ?Closure $callback = null): self
+    /**
+     * Asserts a broadcast notification reached the notifiable's channel.
+     *
+     * A notifiable resolves to its private model channel. Pass a channel
+     * explicitly when the notifiable overrides
+     * `receivesBroadcastNotificationsOn()`.
+     */
+    public function assertNotified(
+        Channel|HasBroadcastChannel|string $notifiable,
+        string $notification,
+        ?Closure $callback = null,
+    ): self {
+        $this->captured()->assertNotified($notifiable, $notification, $callback);
+
+        return $this;
+    }
+
+    public function assertNotNotified(
+        Channel|HasBroadcastChannel|string $notifiable,
+        string $notification,
+        ?Closure $callback = null,
+    ): self {
+        $this->captured()->assertNotNotified($notifiable, $notification, $callback);
+
+        return $this;
+    }
+
+    /**
+     * @param  Closure|array<array-key, mixed>|null  $callback  An array matches the payload as a subset.
+     */
+    public function assertBroadcast(string $event, Closure|array|null $callback = null): self
     {
         $this->captured()->assertBroadcast($event, $callback);
 
         return $this;
     }
 
-    public function assertNotBroadcast(string $event, ?Closure $callback = null): self
+    /**
+     * @param  Closure|array<array-key, mixed>|null  $callback  An array matches the payload as a subset.
+     */
+    public function assertNotBroadcast(string $event, Closure|array|null $callback = null): self
     {
         $this->captured()->assertNotBroadcast($event, $callback);
 
@@ -397,6 +743,125 @@ final class Broadcasting
         $this->captured()->assertNothingBroadcast();
 
         return $this;
+    }
+
+    /**
+     * @param  Collection<int, Whisper>  $whispers
+     * @return Collection<int, Whisper>
+     */
+    private function matchingWhispers(
+        Collection $whispers,
+        string $event,
+        ?Closure $callback,
+    ): Collection {
+        return $whispers->filter(
+            static fn (Whisper $whisper): bool => $whisper->event === $event
+                && ($callback === null || $callback($whisper) === true),
+        );
+    }
+
+    /**
+     * @param  Collection<int, Whisper>  $whispers
+     */
+    private function whisperSummary(Collection $whispers): string
+    {
+        if ($whispers->isEmpty()) {
+            return 'Client events sent: none.';
+        }
+
+        return 'Client events sent: '.$whispers->map(
+            static fn (Whisper $whisper): string => sprintf(
+                '%s on [%s]',
+                $whisper->event,
+                $whisper->channel,
+            ),
+        )->implode(', ').'.';
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $data
+     */
+    private function presence(Channel|HasBroadcastChannel|string $channel, PresenceEvent $event, array $data): self
+    {
+        $name = $this->presenceChannel($channel);
+
+        $result = $this->install()->executor->evaluate(
+            $this->driver->presenceScript($name, $event, $data),
+        );
+
+        if ($result === 'not_subscribed') {
+            throw RealtimeException::presenceChannelNotSubscribed(
+                Channels::toWire($name, ChannelVisibility::Presence),
+            );
+        }
+
+        if ($result !== 'ok') {
+            throw RealtimeException::unexpectedResult('presence', $result);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Resolves a presence channel's name, treating a bare name as presence.
+     */
+    private function presenceChannel(Channel|HasBroadcastChannel|string $channel): string
+    {
+        [$name, $visibility] = Channels::parse($channel);
+
+        if ($visibility === ChannelVisibility::Presence || $visibility === ChannelVisibility::Public) {
+            return $name;
+        }
+
+        throw RealtimeException::notAPresenceChannel(Channels::toWire($name, $visibility));
+    }
+
+    private function presenceWire(Channel|HasBroadcastChannel|string $channel): string
+    {
+        return Channels::toWire($this->presenceChannel($channel), ChannelVisibility::Presence);
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $member
+     */
+    private function memberId(array $member): string|int
+    {
+        $id = $member['id'] ?? null;
+
+        if (! is_string($id) && ! is_int($id)) {
+            throw RealtimeException::missingMemberId();
+        }
+
+        return $id;
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $members
+     */
+    private function hasMember(array $members, string|int $id): bool
+    {
+        foreach (array_keys($members) as $key) {
+            if ((string) $key === (string) $id) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $members
+     */
+    private function memberSummary(array $members): string
+    {
+        if ($members === []) {
+            return 'Members present: none.';
+        }
+
+        return 'Members present: '.implode(', ', array_map(
+            static fn (string|int $id): string => sprintf('[%s]', $id),
+            array_keys($members),
+        )).'.';
     }
 
     /**

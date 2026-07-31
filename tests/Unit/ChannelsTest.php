@@ -8,6 +8,7 @@ use Illuminate\Broadcasting\PresenceChannel;
 use Illuminate\Broadcasting\PrivateChannel;
 use Pest\Realtime\ChannelVisibility;
 use Pest\Realtime\Support\Channels;
+use Pest\Realtime\Tests\Fixtures\Post;
 
 it('treats a bare name as a public channel', function (): void {
     expect(Channels::parse('auctions.1'))->toBe(['auctions.1', ChannelVisibility::Public]);
@@ -27,9 +28,21 @@ it('reads visibility from Laravel channel objects', function (): void {
         ->toBe(['room.3', ChannelVisibility::Presence]);
 });
 
-it('keeps the encrypted prefix inside a private channel name', function (): void {
+it('reads visibility from an encrypted private channel', function (): void {
     expect(Channels::parse(new EncryptedPrivateChannel('buyers.2')))
-        ->toBe(['encrypted-buyers.2', ChannelVisibility::Private]);
+        ->toBe(['buyers.2', ChannelVisibility::PrivateEncrypted])
+        ->and(Channels::parse('private-encrypted-buyers.2'))
+        ->toBe(['buyers.2', ChannelVisibility::PrivateEncrypted]);
+});
+
+it('treats a model as its private broadcast channel', function (): void {
+    $post = new Post();
+    $post->id = 1;
+
+    // Eloquent models are Stringable too, so this only works if the broadcast
+    // channel is read before the string cast, which would give JSON.
+    expect(Channels::parse($post))
+        ->toBe(['Pest.Realtime.Tests.Fixtures.Post.1', ChannelVisibility::Private]);
 });
 
 it('round-trips a parsed channel back to its wire identifier', function (): void {

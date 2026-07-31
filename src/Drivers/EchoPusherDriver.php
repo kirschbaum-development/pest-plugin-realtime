@@ -8,7 +8,7 @@ use JsonException;
 use Pest\Realtime\ChannelVisibility;
 use Pest\Realtime\ConnectionStatus;
 use Pest\Realtime\Contracts\Driver;
-use Pest\Realtime\Exceptions\RealtimeSimulationException;
+use Pest\Realtime\Exceptions\RealtimeException;
 
 final class EchoPusherDriver implements Driver
 {
@@ -17,7 +17,7 @@ final class EchoPusherDriver implements Driver
         $runtime = file_get_contents(dirname(__DIR__, 2).'/resources/echo-pusher.js');
 
         if ($runtime === false) {
-            throw new RealtimeSimulationException('The Echo/Pusher browser runtime could not be loaded.');
+            throw RealtimeException::runtimeUnavailable();
         }
 
         return $runtime;
@@ -31,6 +31,11 @@ final class EchoPusherDriver implements Driver
     public function statusScript(): string
     {
         return $this->runtimeCall('status');
+    }
+
+    public function socketIdScript(): string
+    {
+        return $this->runtimeCall('socketId');
     }
 
     public function transitionScript(ConnectionStatus $status): string

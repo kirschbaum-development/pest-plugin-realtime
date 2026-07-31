@@ -25,6 +25,8 @@
     },
     "require": {
         "illuminate/broadcasting": "^11.0 || ^12.0 || ^13.0",
+        "illuminate/collections": "^11.0 || ^12.0 || ^13.0",
+        "illuminate/support": "^11.0 || ^12.0 || ^13.0",
         "php": "^8.3",
         "pestphp/pest": "^4.7",
         "pestphp/pest-plugin": "^4.0",
@@ -32,6 +34,7 @@
     },
     "require-dev": {
         "illuminate/config": "^11.0 || ^12.0 || ^13.0",
+        "illuminate/events": "^11.0 || ^12.0 || ^13.0",
         "pestphp/pest-dev-tools": "^4.1",
         "symfony/process": "^7.2 || ^8.0"
     },

@@ -27,6 +27,12 @@ final readonly class LaravelBroadcastHarness
                     'secondary' => ['driver' => 'null'],
                 ],
             ],
+            'queue' => [
+                'default' => 'database',
+                'connections' => [
+                    'database' => ['driver' => 'database'],
+                ],
+            ],
         ]);
         $this->manager = new BroadcastManager($this->container);
 

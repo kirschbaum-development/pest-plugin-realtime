@@ -15,6 +15,8 @@ interface Driver
 
     public function statusScript(): string;
 
+    public function socketIdScript(): string;
+
     public function transitionScript(ConnectionStatus $status): string;
 
     public function emitScript(

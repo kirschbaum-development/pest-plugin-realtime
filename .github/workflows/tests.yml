@@ -30,13 +30,12 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
 
       - name: Install PHP dependencies
         run: composer update --prefer-stable --no-interaction --no-progress --ansi
 
       - name: Install Node dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

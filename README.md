@@ -12,8 +12,8 @@ The integration is tested in a real browser against Laravel Echo 2.x and pusher-
 ## Requirements
 
 - PHP 8.3+
-- Pest 4
-- Pest Browser 4
+- Pest 4 or 5
+- Pest Browser 4 or 5
 - A page using Laravel Echo's Pusher-compatible connector
 
 ## Installation

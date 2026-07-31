@@ -11,9 +11,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Pest 5 requires PHP 8.4, so 8.3 resolves to Pest 4 and the rest to
+        # Pest 5. The extra entry covers Pest 4 on a PHP version that could
+        # otherwise take Pest 5, which is a common spot mid-upgrade.
         php: ['8.3', '8.4', '8.5']
+        pest: ['']
+        include:
+          - php: '8.4'
+            pest: '^4.7'
 
-    name: PHP ${{ matrix.php }}
+    name: PHP ${{ matrix.php }}${{ matrix.pest && ' / Pest 4' || '' }}
 
     steps:
       - name: Checkout
@@ -32,7 +39,7 @@ jobs:
           node-version: 22
 
       - name: Install PHP dependencies
-        run: composer update --prefer-stable --no-interaction --no-progress --ansi
+        run: composer update --prefer-stable --no-interaction --no-progress --ansi ${{ matrix.pest && format('--with pestphp/pest:{0}', matrix.pest) || '' }}
 
       - name: Install Node dependencies
         run: npm install --no-audit --no-fund
